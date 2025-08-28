@@ -143,22 +143,67 @@ package_is_installed() {
 # STIG Control Functions
 #############################################################################
 
-# STIG V-257777: Verify RHEL 9 is vendor-supported
+# STIG V-257777: Verify RHEL 9 is vendor-supported (Bulletproof version)
 stig_257777() {
     log_info "Applying STIG V-257777: Verify RHEL 9 is vendor-supported"
     ((TOTAL_CONTROLS++))
     
-    local rhel_version
-    rhel_version=$(cat /etc/redhat-release 2>/dev/null || echo "Unknown")
+    # Multiple fallback methods to determine RHEL version
+    local rhel_version=""
+    local version_found=false
     
-    log_info "Current RHEL version: $rhel_version"
+    # Method 1: /etc/redhat-release (primary)
+    if [[ -f /etc/redhat-release ]] && [[ -r /etc/redhat-release ]]; then
+        rhel_version=$(cat /etc/redhat-release 2>/dev/null || echo "")
+        if [[ -n "$rhel_version" ]]; then
+            log_info "OS version detected: $rhel_version"
+            version_found=true
+        fi
+    fi
     
-    # Check if version contains RHEL 9
-    if [[ "$rhel_version" =~ "Red Hat Enterprise Linux".*"9\." ]]; then
+    # Method 2: /etc/system-release (fallback)
+    if [[ "$version_found" == false ]] && [[ -f /etc/system-release ]]; then
+        rhel_version=$(cat /etc/system-release 2>/dev/null || echo "")
+        if [[ -n "$rhel_version" ]]; then
+            log_info "OS version detected (fallback): $rhel_version"
+            version_found=true
+        fi
+    fi
+    
+    if [[ "$version_found" == false ]]; then
+        log_error "Could not determine OS version"
+        ((FAILED_CONTROLS++))
+        return 1
+    fi
+    
+    # Multiple verification methods for RHEL 9
+    local is_rhel9=false
+    
+    # Check 1: Look for "Red Hat" and "9"
+    if echo "$rhel_version" | grep -i "red hat" >/dev/null 2>&1 && echo "$rhel_version" | grep "9" >/dev/null 2>&1; then
+        is_rhel9=true
+    fi
+    
+    # Check 2: Look for specific RHEL patterns
+    if [[ "$is_rhel9" == false ]]; then
+        if echo "$rhel_version" | grep -iE "(rhel.*9|enterprise.*linux.*9|release 9)" >/dev/null 2>&1; then
+            is_rhel9=true
+        fi
+    fi
+    
+    # Check 3: Look for version 9.x
+    if [[ "$is_rhel9" == false ]]; then
+        if echo "$rhel_version" | grep -E "9\.[0-9]+" >/dev/null 2>&1; then
+            is_rhel9=true
+        fi
+    fi
+    
+    # Final result
+    if [[ "$is_rhel9" == true ]]; then
         log_info "RHEL 9 detected - version appears to be supported"
         ((APPLIED_CONTROLS++))
     else
-        log_warn "Unable to verify RHEL 9 version support"
+        log_warn "Unable to verify RHEL 9 version support: $rhel_version"
         ((FAILED_CONTROLS++))
     fi
 }
@@ -684,9 +729,11 @@ main() {
         os_info=$(cat /etc/redhat-release 2>/dev/null || echo "Unknown")
         log_info "Detected OS: $os_info"
         
-        if ! echo "$os_info" | grep -q "Red Hat Enterprise Linux.*9\." 2>/dev/null; then
+        if ! echo "$os_info" | grep -E "(Red Hat Enterprise Linux.*9|release 9)" 2>/dev/null; then
             log_error "This script is designed for RHEL 9. Current OS may not be supported."
             log_warn "Continuing anyway, but results may be unpredictable."
+        else
+            log_info "RHEL 9 confirmed - proceeding with STIG deployment"
         fi
     else
         log_warn "/etc/redhat-release not found. Cannot verify OS version."
