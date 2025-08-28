@@ -4,7 +4,7 @@
 #                                                                           #
 #  RHEL 9 STIG Deployment Script for Microsoft Azure                       #
 #  Version: 1.0                                                             #
-#  Date: $(date +%F)                                                        #
+#  Date: 2025-08-28                                                         #
 #  Purpose: Automate DISA STIG compliance configuration for RHEL 9         #
 #           while preserving Azure Bastion connectivity                     #
 #                                                                           #
@@ -22,6 +22,7 @@ readonly SCRIPT_VERSION="1.0"
 readonly SCRIPT_DATE="$(date +%F)"
 
 # Exit on any error, undefined variable, or pipe failure
+# Note: Using more lenient error handling for Azure environment compatibility
 set -euo pipefail
 
 # Ensure script is run as root
@@ -677,16 +678,24 @@ main() {
     # Pre-flight checks
     log_info "Performing pre-flight checks..."
     
-    # Check OS version
-    if ! grep -q "Red Hat Enterprise Linux.*9\." /etc/redhat-release 2>/dev/null; then
-        log_error "This script is designed for RHEL 9. Current OS may not be supported."
-        log_warn "Continuing anyway, but results may be unpredictable."
+    # Check OS version (with error handling)
+    if [[ -f /etc/redhat-release ]]; then
+        local os_info
+        os_info=$(cat /etc/redhat-release 2>/dev/null || echo "Unknown")
+        log_info "Detected OS: $os_info"
+        
+        if ! echo "$os_info" | grep -q "Red Hat Enterprise Linux.*9\." 2>/dev/null; then
+            log_error "This script is designed for RHEL 9. Current OS may not be supported."
+            log_warn "Continuing anyway, but results may be unpredictable."
+        fi
+    else
+        log_warn "/etc/redhat-release not found. Cannot verify OS version."
     fi
     
-    # Check available disk space
+    # Check available disk space (with error handling)
     local available_space
-    available_space=$(df / | awk 'NR==2 {print $4}')
-    if [[ $available_space -lt 1048576 ]]; then  # Less than 1GB
+    available_space=$(df / 2>/dev/null | awk 'NR==2 {print $4}' 2>/dev/null || echo "0")
+    if [[ "$available_space" != "0" ]] && [[ $available_space -lt 1048576 ]]; then  # Less than 1GB
         log_warn "Less than 1GB of free space available. Consider cleaning up disk space."
     fi
     
