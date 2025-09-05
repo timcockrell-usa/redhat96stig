@@ -753,6 +753,525 @@ impl_systemd_config() {
     return 1
 }
 
+# STIG Audit Configuration: Comprehensive audit system setup
+impl_audit_config() {
+    local control_id="$1"
+    
+    # Install auditd if not present
+    safe_execute "$control_id" "Installing audit package" "dnf install -y audit"
+    
+    # Configure audit rules for STIG compliance
+    local audit_rules_file="/etc/audit/rules.d/stig.rules"
+    safe_execute "$control_id" "Creating STIG audit rules file" "touch '$audit_rules_file'"
+    
+    # Comprehensive audit rules for STIG compliance
+    local audit_rules=(
+        # Delete and rename events
+        "-a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=unset -k delete"
+        "-a always,exit -F arch=b32 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=unset -k delete"
+        
+        # Access and permission changes
+        "-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod"
+        "-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod"
+        "-a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod"
+        "-a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod"
+        
+        # Extended attribute changes
+        "-a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod"
+        "-a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod"
+        
+        # Administrative actions
+        "-w /etc/sudoers -p wa -k actions"
+        "-w /etc/sudoers.d/ -p wa -k actions"
+        
+        # Login monitoring
+        "-w /var/log/lastlog -p wa -k logins"
+        "-w /var/run/faillock/ -p wa -k logins"
+        
+        # Process and session monitoring
+        "-w /usr/bin/passwd -p x -k privileged-passwd"
+        "-w /usr/sbin/usermod -p x -k privileged-accounts"
+        "-w /usr/sbin/groupmod -p x -k privileged-accounts"
+        
+        # Network configuration monitoring
+        "-a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale"
+        "-a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale"
+        "-w /etc/issue -p wa -k system-locale"
+        "-w /etc/issue.net -p wa -k system-locale"
+        "-w /etc/hosts -p wa -k system-locale"
+        "-w /etc/hostname -p wa -k system-locale"
+    )
+    
+    local success=true
+    for rule in "${audit_rules[@]}"; do
+        if ! safe_execute "$control_id" "Adding audit rule: $rule" "echo '$rule' >> '$audit_rules_file'"; then
+            success=false
+        fi
+    done
+    
+    # Configure auditd.conf
+    local auditd_conf="/etc/audit/auditd.conf"
+    local auditd_settings=(
+        "log_file = /var/log/audit/audit.log"
+        "log_format = RAW"
+        "log_group = root"
+        "priority_boost = 4"
+        "flush = INCREMENTAL_ASYNC"
+        "freq = 50"
+        "max_log_file = 10"
+        "num_logs = 5"
+        "max_log_file_action = ROTATE"
+        "space_left = 75"
+        "space_left_action = SYSLOG"
+        "verify_email = yes"
+        "action_mail_acct = root"
+        "admin_space_left = 50"
+        "admin_space_left_action = SUSPEND"
+        "disk_full_action = SUSPEND"
+        "disk_error_action = SUSPEND"
+        "use_libwrap = yes"
+        "tcp_listen_port = 60"
+        "tcp_listen_queue = 5"
+        "tcp_max_per_addr = 1"
+        "tcp_client_ports = 1024-65535"
+        "tcp_client_max_idle = 0"
+        "enable_krb5 = no"
+        "krb5_principal = auditd"
+    )
+    
+    # Backup original auditd.conf
+    safe_execute "$control_id" "Backing up auditd.conf" "cp '$auditd_conf' '$auditd_conf.backup'"
+    
+    for setting in "${auditd_settings[@]}"; do
+        local key="${setting%% = *}"
+        safe_execute "$control_id" "Configuring auditd: $setting" "sed -i 's/^${key}.*/${setting}/' '$auditd_conf'"
+    done
+    
+    if [[ "$success" == true ]]; then
+        # Enable and start auditd
+        safe_execute "$control_id" "Enabling auditd service" "systemctl enable auditd"
+        safe_execute "$control_id" "Starting auditd service" "systemctl start auditd"
+        safe_execute "$control_id" "Loading audit rules" "augenrules --load"
+        log_info "✅ Comprehensive audit system configured"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Password Policy Configuration
+impl_password_policy() {
+    local control_id="$1"
+    
+    # Configure password quality requirements
+    local pwquality_conf="/etc/security/pwquality.conf"
+    local pwquality_settings=(
+        "difok = 8"
+        "minlen = 15"
+        "dcredit = -1"
+        "ucredit = -1"
+        "lcredit = -1"
+        "ocredit = -1"
+        "minclass = 4"
+        "maxrepeat = 3"
+        "maxclassrepeat = 4"
+        "gecoscheck = 1"
+        "dictcheck = 1"
+        "usercheck = 1"
+        "enforcing = 1"
+        "retry = 3"
+    )
+    
+    safe_execute "$control_id" "Backing up pwquality.conf" "cp '$pwquality_conf' '$pwquality_conf.backup'"
+    
+    local success=true
+    for setting in "${pwquality_settings[@]}"; do
+        local key="${setting%% = *}"
+        if grep -q "^${key}" "$pwquality_conf"; then
+            if ! safe_execute "$control_id" "Updating password policy: $setting" "sed -i 's/^${key}.*/${setting}/' '$pwquality_conf'"; then
+                success=false
+            fi
+        else
+            if ! safe_execute "$control_id" "Adding password policy: $setting" "echo '$setting' >> '$pwquality_conf'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    # Configure password aging in login.defs
+    local login_defs="/etc/login.defs"
+    local login_settings=(
+        "PASS_MAX_DAYS 60"
+        "PASS_MIN_DAYS 1"
+        "PASS_MIN_LEN 15"
+        "PASS_WARN_AGE 7"
+        "LOGIN_RETRIES 3"
+        "LOGIN_TIMEOUT 60"
+        "UMASK 077"
+    )
+    
+    safe_execute "$control_id" "Backing up login.defs" "cp '$login_defs' '$login_defs.backup'"
+    
+    for setting in "${login_settings[@]}"; do
+        local key="${setting%% *}"
+        if grep -q "^${key}" "$login_defs"; then
+            if ! safe_execute "$control_id" "Updating login policy: $setting" "sed -i 's/^${key}.*/${setting}/' '$login_defs'"; then
+                success=false
+            fi
+        else
+            if ! safe_execute "$control_id" "Adding login policy: $setting" "echo '$setting' >> '$login_defs'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Password and login policies configured"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Login Configuration
+impl_login_config() {
+    local control_id="$1"
+    
+    # Configure pam_faillock for account lockout
+    local faillock_conf="/etc/security/faillock.conf"
+    local faillock_settings=(
+        "dir = /var/run/faillock"
+        "audit"
+        "silent"
+        "no_log_info"
+        "deny = 3"
+        "fail_interval = 900"
+        "unlock_time = 0"
+        "even_deny_root"
+        "root_unlock_time = 60"
+    )
+    
+    safe_execute "$control_id" "Creating faillock configuration" "touch '$faillock_conf'"
+    safe_execute "$control_id" "Backing up faillock.conf" "cp '$faillock_conf' '$faillock_conf.backup' 2>/dev/null || true"
+    
+    local success=true
+    for setting in "${faillock_settings[@]}"; do
+        if ! safe_execute "$control_id" "Configuring account lockout: $setting" "echo '$setting' >> '$faillock_conf'"; then
+            success=false
+        fi
+    done
+    
+    # Configure session timeout
+    local profile_timeout="/etc/profile.d/stig-timeout.sh"
+    safe_execute "$control_id" "Creating session timeout script" "echo 'export TMOUT=900' > '$profile_timeout'"
+    safe_execute "$control_id" "Setting timeout script permissions" "chmod 755 '$profile_timeout'"
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Login security configuration applied"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Umask Configuration
+impl_umask_config() {
+    local control_id="$1"
+    
+    # Set secure umask in multiple locations
+    local umask_files=(
+        "/etc/bashrc"
+        "/etc/csh.cshrc"
+        "/etc/profile"
+    )
+    
+    local success=true
+    for file in "${umask_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            if grep -q "umask" "$file"; then
+                if ! safe_execute "$control_id" "Updating umask in $file" "sed -i 's/umask.*/umask 077/' '$file'"; then
+                    success=false
+                fi
+            else
+                if ! safe_execute "$control_id" "Adding umask to $file" "echo 'umask 077' >> '$file'"; then
+                    success=false
+                fi
+            fi
+        fi
+    done
+    
+    # Set umask for systemd services
+    local systemd_system_conf="/etc/systemd/system.conf"
+    if ! safe_execute "$control_id" "Setting systemd umask" "sed -i 's/#UMask=.*/UMask=0077/' '$systemd_system_conf'"; then
+        success=false
+    fi
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Secure umask configuration applied"
+        return 0
+    fi
+    return 1
+}
+
+# STIG System Logging Configuration
+impl_syslog_config() {
+    local control_id="$1"
+    
+    # Install and configure rsyslog
+    safe_execute "$control_id" "Installing rsyslog" "dnf install -y rsyslog"
+    
+    # Configure rsyslog for security
+    local rsyslog_conf="/etc/rsyslog.conf"
+    local rsyslog_stig="/etc/rsyslog.d/50-stig.conf"
+    
+    # Create STIG-specific rsyslog configuration
+    local rsyslog_rules=(
+        "# STIG-required logging"
+        "auth,authpriv.*                 /var/log/secure"
+        "mail.*                          /var/log/maillog"
+        "cron.*                          /var/log/cron"
+        "*.emerg                         :omusrmsg:*"
+        "uucp,news.crit                  /var/log/spooler"
+        "local7.*                        /var/log/boot.log"
+        "# Log all kernel messages to the console"
+        "kern.*                          /dev/console"
+        "# Security-related events"
+        "authpriv.info                   /var/log/secure"
+    )
+    
+    safe_execute "$control_id" "Creating STIG rsyslog configuration" "touch '$rsyslog_stig'"
+    
+    local success=true
+    for rule in "${rsyslog_rules[@]}"; do
+        if ! safe_execute "$control_id" "Adding rsyslog rule: $rule" "echo '$rule' >> '$rsyslog_stig'"; then
+            success=false
+        fi
+    done
+    
+    # Configure log file permissions
+    local log_files=(
+        "/var/log/messages:640"
+        "/var/log/secure:600"
+        "/var/log/maillog:640"
+        "/var/log/cron:600"
+        "/var/log/spooler:640"
+        "/var/log/boot.log:640"
+    )
+    
+    for log_perm in "${log_files[@]}"; do
+        local log_file="${log_perm%:*}"
+        local perm="${log_perm#*:}"
+        if [[ -f "$log_file" ]]; then
+            safe_execute "$control_id" "Setting permissions on $log_file" "chmod $perm '$log_file'"
+            safe_execute "$control_id" "Setting ownership on $log_file" "chown root:root '$log_file'"
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        safe_execute "$control_id" "Enabling rsyslog service" "systemctl enable --now rsyslog"
+        log_info "✅ System logging configuration applied"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Cron Security Configuration
+impl_cron_config() {
+    local control_id="$1"
+    
+    # Configure cron access control
+    local cron_allow="/etc/cron.allow"
+    local cron_deny="/etc/cron.deny"
+    
+    # Create cron.allow with only root
+    safe_execute "$control_id" "Creating cron.allow" "echo 'root' > '$cron_allow'"
+    safe_execute "$control_id" "Setting cron.allow permissions" "chmod 600 '$cron_allow'"
+    safe_execute "$control_id" "Setting cron.allow ownership" "chown root:root '$cron_allow'"
+    
+    # Remove cron.deny if it exists
+    if [[ -f "$cron_deny" ]]; then
+        safe_execute "$control_id" "Removing cron.deny" "rm -f '$cron_deny'"
+    fi
+    
+    # Set proper permissions on cron directories
+    local cron_dirs=(
+        "/etc/crontab:600"
+        "/etc/cron.d:700"
+        "/etc/cron.daily:700"
+        "/etc/cron.hourly:700"
+        "/etc/cron.monthly:700"
+        "/etc/cron.weekly:700"
+        "/var/spool/cron:700"
+    )
+    
+    local success=true
+    for dir_perm in "${cron_dirs[@]}"; do
+        local dir="${dir_perm%:*}"
+        local perm="${dir_perm#*:}"
+        if [[ -e "$dir" ]]; then
+            if ! safe_execute "$control_id" "Setting permissions on $dir" "chmod $perm '$dir'"; then
+                success=false
+            fi
+            if ! safe_execute "$control_id" "Setting ownership on $dir" "chown root:root '$dir'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        safe_execute "$control_id" "Enabling crond service" "systemctl enable --now crond"
+        log_info "✅ Cron security configuration applied"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Network Security Configuration (Azure-safe)
+impl_network_config() {
+    local control_id="$1"
+    
+    # Configure network security parameters (Azure-safe)
+    local network_sysctl=(
+        "net.ipv4.ip_forward=0"
+        "net.ipv4.conf.all.accept_source_route=0"
+        "net.ipv4.conf.default.accept_source_route=0"
+        "net.ipv6.conf.all.accept_source_route=0"
+        "net.ipv6.conf.default.accept_source_route=0"
+        "net.ipv4.conf.all.accept_redirects=0"
+        "net.ipv4.conf.default.accept_redirects=0"
+        "net.ipv6.conf.all.accept_redirects=0"
+        "net.ipv6.conf.default.accept_redirects=0"
+        "net.ipv4.conf.all.secure_redirects=0"
+        "net.ipv4.conf.default.secure_redirects=0"
+        "net.ipv4.conf.all.log_martians=1"
+        "net.ipv4.conf.default.log_martians=1"
+        "net.ipv4.icmp_echo_ignore_broadcasts=1"
+        "net.ipv4.icmp_ignore_bogus_error_responses=1"
+        "net.ipv4.tcp_syncookies=1"
+        "net.ipv4.conf.all.rp_filter=1"
+        "net.ipv4.conf.default.rp_filter=1"
+    )
+    
+    local network_sysctl_file="/etc/sysctl.d/99-stig-network.conf"
+    safe_execute "$control_id" "Creating network sysctl file" "touch '$network_sysctl_file'"
+    
+    local success=true
+    for setting in "${network_sysctl[@]}"; do
+        if ! safe_execute "$control_id" "Setting network parameter: $setting" "echo '$setting' >> '$network_sysctl_file'"; then
+            success=false
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        safe_execute "$control_id" "Applying network security parameters" "sysctl -p '$network_sysctl_file'"
+        log_info "✅ Network security configuration applied (Azure-safe)"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Service Security Configuration
+impl_service_config() {
+    local control_id="$1"
+    
+    # Disable unnecessary services (Azure-safe)
+    local services_to_disable=(
+        "avahi-daemon"
+        "cups"
+        "nfs-server"
+        "rpcbind"
+        "telnet.socket"
+        "rsh.socket"
+        "rlogin.socket"
+        "vsftpd"
+        "httpd"
+        "dovecot"
+        "smb"
+        "squid"
+        "snmpd"
+    )
+    
+    # Note: We preserve SSH and other Azure-essential services
+    local success=true
+    for service in "${services_to_disable[@]}"; do
+        if systemctl list-unit-files "$service" >/dev/null 2>&1; then
+            if systemctl is-enabled "$service" >/dev/null 2>&1; then
+                if ! safe_execute "$control_id" "Disabling service $service" "systemctl disable '$service'"; then
+                    success=false
+                fi
+            fi
+            if systemctl is-active "$service" >/dev/null 2>&1; then
+                safe_execute "$control_id" "Stopping service $service" "systemctl stop '$service'"
+            fi
+        fi
+    done
+    
+    # Ensure essential services are running
+    local essential_services=(
+        "sshd"
+        "rsyslog"
+        "auditd"
+        "chronyd"
+    )
+    
+    for service in "${essential_services[@]}"; do
+        safe_execute "$control_id" "Enabling essential service $service" "systemctl enable '$service'"
+        safe_execute "$control_id" "Starting essential service $service" "systemctl start '$service'"
+    done
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Service security configuration applied"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Filesystem Security Configuration
+impl_filesystem_config() {
+    local control_id="$1"
+    
+    # Configure mount options for security
+    local fstab_file="/etc/fstab"
+    safe_execute "$control_id" "Backing up fstab" "cp '$fstab_file' '$fstab_file.backup'"
+    
+    # Add nodev,nosuid,noexec to /tmp if it exists as separate mount
+    if mount | grep -q " /tmp "; then
+        safe_execute "$control_id" "Securing /tmp mount options" "sed -i '/\/tmp/s/defaults/defaults,nodev,nosuid,noexec/' '$fstab_file'"
+    fi
+    
+    # Set proper permissions on critical directories
+    local critical_dirs=(
+        "/etc:755"
+        "/etc/passwd:644"
+        "/etc/shadow:000"
+        "/etc/group:644"
+        "/etc/gshadow:000"
+        "/etc/security:700"
+        "/etc/audit:750"
+        "/var/log:755"
+        "/var/log/audit:750"
+        "/etc/ssh:755"
+        "/root:700"
+    )
+    
+    local success=true
+    for dir_perm in "${critical_dirs[@]}"; do
+        local dir="${dir_perm%:*}"
+        local perm="${dir_perm#*:}"
+        if [[ -e "$dir" ]]; then
+            if ! safe_execute "$control_id" "Setting permissions on $dir" "chmod $perm '$dir'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    # Remove world-writable files (excluding specific system directories)
+    safe_execute "$control_id" "Finding and securing world-writable files" "find /usr /etc /var -type f -perm -002 -not -path '/tmp/*' -not -path '/var/tmp/*' -not -path '/dev/*' -not -path '/proc/*' -not -path '/sys/*' -exec chmod o-w {} \; 2>/dev/null || true"
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Filesystem security configuration applied"
+        return 0
+    fi
+    return 1
+}
+
 #############################################################################
 # Main Execution Function
 #############################################################################
@@ -806,6 +1325,17 @@ main() {
     execute_stig_control "SYSTEMD-CONFIG" "Configure systemd security settings" "impl_systemd_config"
     execute_stig_control "FILE-PERMS" "Configure file permissions" "impl_file_permissions"
     execute_stig_control "REMOVE-PKGS" "Remove unnecessary packages" "impl_remove_packages"
+    
+    # Comprehensive STIG compliance additions
+    execute_stig_control "AUDIT-CONFIG" "Configure comprehensive auditing" "impl_audit_config"
+    execute_stig_control "PASSWORD-POLICY" "Configure password policies" "impl_password_policy"
+    execute_stig_control "LOGIN-CONFIG" "Configure login restrictions" "impl_login_config"
+    execute_stig_control "UMASK-CONFIG" "Configure default umask" "impl_umask_config"
+    execute_stig_control "SYSLOG-CONFIG" "Configure system logging" "impl_syslog_config"
+    execute_stig_control "CRON-CONFIG" "Configure cron security" "impl_cron_config"
+    execute_stig_control "NETWORK-CONFIG" "Configure network security" "impl_network_config"
+    execute_stig_control "SERVICE-CONFIG" "Configure service security" "impl_service_config"
+    execute_stig_control "FILESYSTEM-CONFIG" "Configure filesystem security" "impl_filesystem_config"
 }
 
 # Comprehensive cleanup with detailed error reporting
