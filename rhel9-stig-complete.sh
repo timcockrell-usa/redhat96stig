@@ -753,6 +753,98 @@ impl_systemd_config() {
     return 1
 }
 
+# STIG Password Policy Configuration
+impl_password_config() {
+    local control_id="$1"
+    
+    # Configure password quality requirements
+    local pwquality_conf="/etc/security/pwquality.conf"
+    local pwquality_settings=(
+        "minlen = 15"
+        "minclass = 4"
+        "maxrepeat = 3"
+        "maxclasschars = 4"
+        "lcredit = -1"
+        "ucredit = -1"
+        "dcredit = -1"
+        "ocredit = -1"
+        "difok = 8"
+        "gecoscheck = 1"
+        "dictcheck = 1"
+        "usercheck = 1"
+        "enforcing = 1"
+        "retry = 3"
+    )
+    
+    # Backup existing configuration
+    if [[ -f "$pwquality_conf" ]]; then
+        safe_execute "$control_id" "Backing up pwquality.conf" "cp '$pwquality_conf' '$pwquality_conf.backup'"
+    fi
+    
+    local success=true
+    for setting in "${pwquality_settings[@]}"; do
+        local key="${setting%% = *}"
+        if grep -q "^${key}" "$pwquality_conf"; then
+            if ! safe_execute "$control_id" "Updating password setting: $setting" "sed -i 's/^${key}.*/${setting}/' '$pwquality_conf'"; then
+                success=false
+            fi
+        else
+            if ! safe_execute "$control_id" "Adding password setting: $setting" "echo '$setting' >> '$pwquality_conf'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    # Configure password aging in login.defs
+    local login_defs="/etc/login.defs"
+    if [[ -f "$login_defs" ]]; then
+        safe_execute "$control_id" "Backing up login.defs" "cp '$login_defs' '$login_defs.backup'"
+        
+        # Set password aging parameters
+        local aging_params=(
+            "PASS_MAX_DAYS 60"
+            "PASS_MIN_DAYS 1"
+            "PASS_WARN_AGE 7"
+            "PASS_MIN_LEN 15"
+        )
+        
+        for param in "${aging_params[@]}"; do
+            local key="${param%% *}"
+            if grep -q "^${key}" "$login_defs"; then
+                safe_execute "$control_id" "Updating login.defs: $param" "sed -i 's/^${key}.*/${param}/' '$login_defs'"
+            else
+                safe_execute "$control_id" "Adding to login.defs: $param" "echo '$param' >> '$login_defs'"
+            fi
+        done
+    fi
+    
+    # Configure PAM password requirements
+    local pam_password="/etc/pam.d/password-auth"
+    local pam_system="/etc/pam.d/system-auth"
+    
+    for pam_file in "$pam_password" "$pam_system"; do
+        if [[ -f "$pam_file" ]]; then
+            safe_execute "$control_id" "Backing up $pam_file" "cp '$pam_file' '$pam_file.backup'"
+            
+            # Ensure pwquality is configured
+            if ! grep -q "pam_pwquality.so" "$pam_file"; then
+                safe_execute "$control_id" "Adding pwquality to $pam_file" "sed -i '/password.*requisite.*pam_pwquality.so/d; /password.*required.*pam_unix.so/i password    requisite     pam_pwquality.so try_first_pass local_users_only retry=3 authtok_type=' '$pam_file'"
+            fi
+            
+            # Configure password history
+            if ! grep -q "remember=" "$pam_file"; then
+                safe_execute "$control_id" "Adding password history to $pam_file" "sed -i 's/password.*sufficient.*pam_unix.so.*/& remember=5/' '$pam_file'"
+            fi
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Password policy configuration applied"
+        return 0
+    fi
+    return 1
+}
+
 # STIG Audit Configuration: Comprehensive audit system setup
 impl_audit_config() {
     local control_id="$1"
@@ -1272,6 +1364,467 @@ impl_filesystem_config() {
     return 1
 }
 
+# STIG PKI and Certificate Configuration
+impl_pki_config() {
+    local control_id="$1"
+    
+    # Install required PKI packages
+    local pki_packages=(
+        "openssl-pkcs11"
+        "gnutls-utils"
+        "nss-tools"
+        "openssl"
+        "ca-certificates"
+    )
+    
+    local success=true
+    for package in "${pki_packages[@]}"; do
+        if ! safe_execute "$control_id" "Installing PKI package $package" "dnf install -y '$package'"; then
+            success=false
+        fi
+    done
+    
+    # Generate generic self-signed certificate for STIG compliance
+    local cert_dir="/etc/pki/tls/certs"
+    local key_dir="/etc/pki/tls/private"
+    local cert_file="$cert_dir/stig-generic.crt"
+    local key_file="$key_dir/stig-generic.key"
+    
+    # Create generic certificate for STIG compliance
+    if [[ ! -f "$cert_file" ]]; then
+        safe_execute "$control_id" "Creating certificate directories" "mkdir -p '$cert_dir' '$key_dir'"
+        
+        # Generate private key
+        safe_execute "$control_id" "Generating private key" "openssl genrsa -out '$key_file' 2048"
+        safe_execute "$control_id" "Setting private key permissions" "chmod 600 '$key_file'"
+        
+        # Generate self-signed certificate
+        safe_execute "$control_id" "Generating self-signed certificate" "openssl req -new -x509 -key '$key_file' -out '$cert_file' -days 365 -subj '/C=US/ST=State/L=City/O=Organization/CN=stig-generic'"
+        safe_execute "$control_id" "Setting certificate permissions" "chmod 644 '$cert_file'"
+        
+        log_info "✅ Generic STIG certificate created at $cert_file"
+    fi
+    
+    # Configure certificate trust
+    safe_execute "$control_id" "Updating CA trust" "update-ca-trust"
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ PKI and certificate configuration completed"
+        return 0
+    fi
+    return 1
+}
+
+# STIG System Limits Configuration
+impl_limits_config() {
+    local control_id="$1"
+    
+    # Configure system limits for security
+    local limits_conf="/etc/security/limits.d/99-stig.conf"
+    local limits_settings=(
+        "* hard core 0"
+        "* soft core 0"
+        "* hard maxlogins 10"
+        "root hard core 0"
+        "root soft core 0"
+    )
+    
+    safe_execute "$control_id" "Creating STIG limits configuration" "touch '$limits_conf'"
+    
+    local success=true
+    for setting in "${limits_settings[@]}"; do
+        if ! safe_execute "$control_id" "Configuring limit: $setting" "echo '$setting' >> '$limits_conf'"; then
+            success=false
+        fi
+    done
+    
+    # Configure systemd limits
+    local systemd_conf="/etc/systemd/system.conf"
+    local systemd_limits=(
+        "DefaultLimitCORE=0"
+        "DefaultLimitNOFILE=1024"
+        "DefaultLimitNPROC=1024"
+    )
+    
+    for setting in "${systemd_limits[@]}"; do
+        local key="${setting%%=*}"
+        if grep -q "^${key}=" "$systemd_conf"; then
+            safe_execute "$control_id" "Updating systemd limit: $setting" "sed -i 's/^${key}=.*/${setting}/' '$systemd_conf'"
+        else
+            safe_execute "$control_id" "Adding systemd limit: $setting" "echo '$setting' >> '$systemd_conf'"
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ System limits configuration applied"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Core Dump Configuration
+impl_coredump_config() {
+    local control_id="$1"
+    
+    # Configure systemd-coredump
+    local coredump_conf="/etc/systemd/coredump.conf"
+    local coredump_settings=(
+        "Storage=none"
+        "ProcessSizeMax=0"
+        "ExternalSizeMax=0"
+        "JournalSizeMax=0"
+        "MaxUse=0"
+        "KeepFree=0"
+    )
+    
+    # Create coredump configuration directory if needed
+    safe_execute "$control_id" "Creating coredump config directory" "mkdir -p /etc/systemd"
+    
+    # Backup and configure coredump.conf
+    if [[ -f "$coredump_conf" ]]; then
+        safe_execute "$control_id" "Backing up coredump.conf" "cp '$coredump_conf' '$coredump_conf.backup'"
+    fi
+    
+    local success=true
+    for setting in "${coredump_settings[@]}"; do
+        local key="${setting%%=*}"
+        if [[ -f "$coredump_conf" ]] && grep -q "^${key}=" "$coredump_conf"; then
+            if ! safe_execute "$control_id" "Updating coredump setting: $setting" "sed -i 's/^${key}=.*/${setting}/' '$coredump_conf'"; then
+                success=false
+            fi
+        else
+            if ! safe_execute "$control_id" "Adding coredump setting: $setting" "echo '$setting' >> '$coredump_conf'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    # Disable systemd-coredump socket
+    safe_execute "$control_id" "Masking systemd-coredump.socket" "systemctl mask systemd-coredump.socket"
+    safe_execute "$control_id" "Disabling systemd-coredump" "systemctl disable systemd-coredump"
+    
+    # Disable kdump service
+    safe_execute "$control_id" "Masking kdump service" "systemctl mask kdump"
+    safe_execute "$control_id" "Disabling kdump service" "systemctl disable kdump"
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Core dump restrictions configured"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Namespace Configuration
+impl_namespace_config() {
+    local control_id="$1"
+    
+    # Disable user namespaces for security
+    local namespace_sysctl="/etc/sysctl.d/99-stig-namespace.conf"
+    local namespace_settings=(
+        "user.max_user_namespaces=0"
+        "user.max_pid_namespaces=0"
+        "user.max_net_namespaces=0"
+    )
+    
+    safe_execute "$control_id" "Creating namespace sysctl file" "touch '$namespace_sysctl'"
+    
+    local success=true
+    for setting in "${namespace_settings[@]}"; do
+        if ! safe_execute "$control_id" "Setting namespace parameter: $setting" "echo '$setting' >> '$namespace_sysctl'"; then
+            success=false
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        safe_execute "$control_id" "Applying namespace restrictions" "sysctl -p '$namespace_sysctl'"
+        log_info "✅ Namespace restrictions configured"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Package Configuration
+impl_package_config() {
+    local control_id="$1"
+    
+    # Install required packages for STIG compliance
+    local required_packages=(
+        "aide"
+        "audit"
+        "rsyslog"
+        "chrony"
+        "s-nail"
+        "openssl"
+        "openssl-pkcs11"
+        "gnutls-utils"
+        "nss-tools"
+        "policycoreutils-python-utils"
+        "setroubleshoot-server"
+    )
+    
+    local success=true
+    for package in "${required_packages[@]}"; do
+        if ! safe_execute "$control_id" "Installing required package $package" "dnf install -y '$package'"; then
+            success=false
+        fi
+    done
+    
+    # Remove tuned package if not operationally required
+    if rpm -q tuned >/dev/null 2>&1; then
+        safe_execute "$control_id" "Removing tuned package" "dnf remove -y tuned"
+    fi
+    
+    # Configure DNF for STIG compliance
+    local dnf_conf="/etc/dnf/dnf.conf"
+    if [[ -f "$dnf_conf" ]]; then
+        # Enable GPG checking
+        if ! grep -q "^gpgcheck=1" "$dnf_conf"; then
+            safe_execute "$control_id" "Enabling DNF GPG checking" "echo 'gpgcheck=1' >> '$dnf_conf'"
+        fi
+        # Enable local GPG checking
+        if ! grep -q "^localpkg_gpgcheck=1" "$dnf_conf"; then
+            safe_execute "$control_id" "Enabling DNF local GPG checking" "echo 'localpkg_gpgcheck=1' >> '$dnf_conf'"
+        fi
+    fi
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Required packages installed and configured"
+        return 0
+    fi
+    return 1
+}
+
+# STIG AIDE Configuration
+impl_aide_config() {
+    local control_id="$1"
+    
+    # Install AIDE if not present
+    safe_execute "$control_id" "Installing AIDE" "dnf install -y aide"
+    
+    # Initialize AIDE database
+    if [[ ! -f /var/lib/aide/aide.db.gz ]]; then
+        safe_execute "$control_id" "Initializing AIDE database" "aide --init"
+        safe_execute "$control_id" "Moving AIDE database" "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+    fi
+    
+    # Configure AIDE for daily checks
+    local aide_cron="/etc/cron.daily/aide-check"
+    safe_execute "$control_id" "Creating AIDE daily check script" "cat > '$aide_cron' << 'EOF'
+#!/bin/bash
+# AIDE daily integrity check
+/usr/sbin/aide --check 2>&1 | /usr/bin/logger -t aide
+EOF"
+    safe_execute "$control_id" "Making AIDE cron script executable" "chmod 755 '$aide_cron'"
+    
+    log_info "✅ AIDE file integrity monitoring configured"
+    return 0
+}
+
+# STIG FIPS Configuration (conditional)
+impl_fips_config() {
+    local control_id="$1"
+    
+    # Check if FIPS is already enabled
+    if [[ -f /proc/sys/crypto/fips_enabled ]] && [[ "$(cat /proc/sys/crypto/fips_enabled)" == "1" ]]; then
+        log_info "✅ FIPS mode already enabled"
+        return 0
+    fi
+    
+    # Install FIPS packages
+    safe_execute "$control_id" "Installing FIPS packages" "dnf install -y dracut-fips"
+    
+    # Note: FIPS enablement requires careful consideration and reboot
+    handle_skip "$control_id" "FIPS mode enablement requires manual verification and reboot"
+    log_warn "⚠️ Manual action: To enable FIPS mode, run: fips-mode-setup --enable"
+    log_warn "   This requires a system reboot and should be done with caution"
+    
+    return 0
+}
+
+# STIG Additional Banner Configuration
+impl_banner_config() {
+    local control_id="$1"
+    
+    # Configure MOTD
+    local motd_file="/etc/motd"
+    safe_execute "$control_id" "Creating MOTD banner" "echo '$DOD_BANNER_TEXT' > '$motd_file'"
+    safe_execute "$control_id" "Setting MOTD permissions" "chmod 644 '$motd_file'"
+    
+    # Configure SSH banner
+    local ssh_config="/etc/ssh/sshd_config"
+    if [[ -f "$ssh_config" ]]; then
+        # Backup SSH config
+        safe_execute "$control_id" "Backing up SSH config" "cp '$ssh_config' '$ssh_config.backup'"
+        
+        # Configure SSH banner
+        if grep -q "^Banner" "$ssh_config"; then
+            safe_execute "$control_id" "Updating SSH banner" "sed -i 's/^Banner.*/Banner \/etc\/issue/' '$ssh_config'"
+        else
+            safe_execute "$control_id" "Adding SSH banner" "echo 'Banner /etc/issue' >> '$ssh_config'"
+        fi
+        
+        # Ensure SSH service is reloaded
+        safe_execute "$control_id" "Reloading SSH service" "systemctl reload sshd"
+    fi
+    
+    log_info "✅ Additional banner configuration applied"
+    return 0
+}
+
+# STIG GRUB Password Configuration
+impl_grub_password() {
+    local control_id="$1"
+    
+    # Generate GRUB password hash
+    local grub_password="STIGCompliance123!"
+    local grub_user="stig_admin"
+    
+    # Create GRUB password hash
+    log_info "Generating GRUB password hash..."
+    local password_hash
+    password_hash=$(echo -e "$grub_password\n$grub_password" | grub2-mkpasswd-pbkdf2 | grep -o 'grub\.pbkdf2\.sha512\.[^[:space:]]*')
+    
+    if [[ -n "$password_hash" ]]; then
+        # Configure GRUB password
+        local grub_password_file="/etc/grub.d/01_password"
+        safe_execute "$control_id" "Creating GRUB password configuration" "cat > '$grub_password_file' << EOF
+#!/bin/sh
+set -e
+cat << 'GRUB_EOF'
+set superusers=\"$grub_user\"
+password_pbkdf2 $grub_user $password_hash
+GRUB_EOF
+EOF"
+        
+        safe_execute "$control_id" "Making GRUB password file executable" "chmod 755 '$grub_password_file'"
+        
+        # Update GRUB configuration
+        safe_execute "$control_id" "Updating GRUB configuration" "grub2-mkconfig -o /boot/grub2/grub.cfg"
+        
+        log_info "✅ GRUB password protection enabled"
+        log_warn "⚠️ GRUB superuser: $grub_user, Password: $grub_password"
+    else
+        handle_error "$control_id" "Failed to generate GRUB password hash"
+        return 1
+    fi
+    
+    return 0
+}
+
+# STIG Additional Network Security
+impl_network_security() {
+    local control_id="$1"
+    
+    # Advanced network security parameters
+    local network_sysctl="/etc/sysctl.d/99-stig-network.conf"
+    local network_settings=(
+        # Disable packet forwarding
+        "net.ipv4.ip_forward=0"
+        "net.ipv6.conf.all.forwarding=0"
+        
+        # Disable ICMP redirects
+        "net.ipv4.conf.all.accept_redirects=0"
+        "net.ipv4.conf.default.accept_redirects=0"
+        "net.ipv6.conf.all.accept_redirects=0"
+        "net.ipv6.conf.default.accept_redirects=0"
+        
+        # Disable source routing
+        "net.ipv4.conf.all.accept_source_route=0"
+        "net.ipv4.conf.default.accept_source_route=0"
+        "net.ipv6.conf.all.accept_source_route=0"
+        "net.ipv6.conf.default.accept_source_route=0"
+        
+        # Enable reverse path filtering
+        "net.ipv4.conf.all.rp_filter=1"
+        "net.ipv4.conf.default.rp_filter=1"
+        
+        # Disable ICMP ping responses
+        "net.ipv4.icmp_echo_ignore_all=1"
+        
+        # TCP security
+        "net.ipv4.tcp_syncookies=1"
+        "net.ipv4.tcp_timestamps=0"
+    )
+    
+    safe_execute "$control_id" "Creating network security sysctl file" "touch '$network_sysctl'"
+    
+    local success=true
+    for setting in "${network_settings[@]}"; do
+        if ! safe_execute "$control_id" "Setting network parameter: $setting" "echo '$setting' >> '$network_sysctl'"; then
+            success=false
+        fi
+    done
+    
+    if [[ "$success" == true ]]; then
+        safe_execute "$control_id" "Applying network security settings" "sysctl -p '$network_sysctl'"
+        log_info "✅ Advanced network security configured"
+        return 0
+    fi
+    return 1
+}
+
+# STIG Additional Service Hardening
+impl_service_hardening() {
+    local control_id="$1"
+    
+    # Additional services to disable for security
+    local services_to_disable=(
+        "rpcbind.service"
+        "nfs-server.service"
+        "cups.service"
+        "avahi-daemon.service"
+        "bluetooth.service"
+        "multipathd.service"
+        "iscsid.service"
+        "iscsi.service"
+        "rsyncd.service"
+        "vsftpd.service"
+        "dovecot.service"
+        "squid.service"
+        "httpd.service"
+        "nginx.service"
+        "named.service"
+        "dhcpd.service"
+        "tftp.service"
+        "xinetd.service"
+        "telnet.service"
+        "rsh.service"
+        "rlogin.service"
+    )
+    
+    local success=true
+    for service in "${services_to_disable[@]}"; do
+        if systemctl is-enabled "$service" >/dev/null 2>&1; then
+            if ! safe_execute "$control_id" "Disabling service $service" "systemctl disable '$service'"; then
+                success=false
+            fi
+        fi
+        
+        if systemctl is-active "$service" >/dev/null 2>&1; then
+            if ! safe_execute "$control_id" "Stopping service $service" "systemctl stop '$service'"; then
+                success=false
+            fi
+        fi
+    done
+    
+    # Mask dangerous services
+    local services_to_mask=(
+        "kdump.service"
+        "systemd-coredump.socket"
+        "debug-shell.service"
+    )
+    
+    for service in "${services_to_mask[@]}"; do
+        safe_execute "$control_id" "Masking service $service" "systemctl mask '$service'"
+    done
+    
+    if [[ "$success" == true ]]; then
+        log_info "✅ Additional service hardening completed"
+        return 0
+    fi
+    return 1
+}
+
 #############################################################################
 # Main Execution Function
 #############################################################################
@@ -1336,6 +1889,19 @@ main() {
     execute_stig_control "NETWORK-CONFIG" "Configure network security" "impl_network_config"
     execute_stig_control "SERVICE-CONFIG" "Configure service security" "impl_service_config"
     execute_stig_control "FILESYSTEM-CONFIG" "Configure filesystem security" "impl_filesystem_config"
+    
+    # Additional STIG controls for comprehensive compliance
+    execute_stig_control "PKI-CONFIG" "Configure PKI and certificates" "impl_pki_config"
+    execute_stig_control "LIMITS-CONFIG" "Configure system limits" "impl_limits_config"
+    execute_stig_control "COREDUMP-CONFIG" "Configure core dump restrictions" "impl_coredump_config"
+    execute_stig_control "NAMESPACE-CONFIG" "Configure namespace restrictions" "impl_namespace_config"
+    execute_stig_control "PACKAGE-CONFIG" "Configure required packages" "impl_package_config"
+    execute_stig_control "AIDE-CONFIG" "Configure file integrity monitoring" "impl_aide_config"
+    execute_stig_control "FIPS-CONFIG" "Configure FIPS mode (if required)" "impl_fips_config"
+    execute_stig_control "BANNER-CONFIG" "Configure additional banners" "impl_banner_config"
+    execute_stig_control "GRUB-PASSWORD" "Configure GRUB password protection" "impl_grub_password"
+    execute_stig_control "NETWORK-SECURITY" "Configure advanced network security" "impl_network_security"
+    execute_stig_control "SERVICE-HARDENING" "Configure additional service hardening" "impl_service_hardening"
 }
 
 # Comprehensive cleanup with detailed error reporting
