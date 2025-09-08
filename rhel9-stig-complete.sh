@@ -18,8 +18,18 @@
 #############################################################################
 
 # Script metadata
+readonly SCRIPT_NAME="rhel9-stig-complete-deployment"
 readonly SCRIPT_VERSION="2.1"
 readonly SCRIPT_DATE="2025-09-08"
+
+# Relaxed error handling - individual controls manage their own errors
+# set -eu
+
+# Ensure script is run as root
+if [[ $EUID -ne 0 ]]; then
+   echo "ERROR: This script must be run as root (or with sudo)" 
+   exit 1
+fi
 
 # Enhanced logging setup
 readonly LOG_DIR="/var/log/stig-deployment"
@@ -40,32 +50,6 @@ log_to_file() {
         echo "[$timestamp] $message" >> "$ERROR_LOG"
     fi
 }
-
-# Script metadata
-readonly SCRIPT_NAME="rhel9-stig-complete-deployment"
-readonly SCRIPT_VERSION="2.0"
-readonly SCRIPT_DATE="2025-08-28"
-
-# Relaxed error handling - individual controls manage their own errors
-# set -eu
-
-# Ensure script is run as root
-if [[ $EUID -ne 0 ]]; then
-   echo "ERROR: This script must be run as root (or with sudo)" 
-   exit 1
-fi
-
-# Logging setup
-readonly LOG_DIR="/var/log/stig-deployment"
-readonly LOG_FILE="${LOG_DIR}/stig_complete_deployment_$(date +%F_%H-%M-%S).log"
-readonly SUMMARY_LOG="${LOG_DIR}/stig_complete_summary_$(date +%F_%H-%M-%S).log"
-
-# Create log directory if it doesn't exist
-mkdir -p "${LOG_DIR}"
-
-# Setup logging to both console and file
-exec > >(tee -a "${LOG_FILE}")
-exec 2> >(tee -a "${LOG_FILE}" >&2)
 
 # Color codes for output
 readonly RED='\033[0;31m'
@@ -1592,6 +1576,8 @@ impl_coredump_config() {
     
     # Configure kernel core dump settings
     local sysctl_conf="/etc/sysctl.d/99-stig-coredump.conf"
+    
+    # Create sysctl configuration for core dumps
     cat > "$sysctl_conf" << 'EOF'
 # STIG Core Dump Restrictions
 kernel.core_pattern=|/bin/false
@@ -1739,11 +1725,14 @@ impl_aide_config() {
     
     # Configure AIDE for daily checks
     local aide_cron="/etc/cron.daily/aide-check"
-    safe_execute "$control_id" "Creating AIDE daily check script" "cat > '$aide_cron' << 'EOF'
+    
+    # Create AIDE daily check script
+    cat > "$aide_cron" << 'EOF'
 #!/bin/bash
 # AIDE daily integrity check
 /usr/sbin/aide --check 2>&1 | /usr/bin/logger -t aide
-EOF"
+EOF
+    
     safe_execute "$control_id" "Making AIDE cron script executable" "chmod 755 '$aide_cron'"
     
     log_info "✅ AIDE file integrity monitoring configured"
@@ -1817,14 +1806,16 @@ impl_grub_password() {
     if [[ -n "$password_hash" ]]; then
         # Configure GRUB password
         local grub_password_file="/etc/grub.d/01_password"
-        safe_execute "$control_id" "Creating GRUB password configuration" "cat > '$grub_password_file' << EOF
+        
+        # Create GRUB password configuration file
+        cat > "$grub_password_file" << EOF
 #!/bin/sh
 set -e
 cat << 'GRUB_EOF'
-set superusers=\"$grub_user\"
+set superusers="$grub_user"
 password_pbkdf2 $grub_user $password_hash
 GRUB_EOF
-EOF"
+EOF
         
         safe_execute "$control_id" "Making GRUB password file executable" "chmod 755 '$grub_password_file'"
         
