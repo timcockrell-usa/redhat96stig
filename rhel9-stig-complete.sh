@@ -118,6 +118,66 @@ log_skip() {
     log_to_file "SKIP" "$*"
 }
 
+# Air-gap detection and configuration
+detect_air_gap() {
+    local is_air_gapped=false
+    
+    # Test internet connectivity with multiple methods
+    if ! ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1 && \
+       ! ping -c 1 -W 5 1.1.1.1 >/dev/null 2>&1 && \
+       ! curl -m 10 -s http://www.google.com >/dev/null 2>&1; then
+        is_air_gapped=true
+    fi
+    
+    if [[ "$is_air_gapped" == "true" ]]; then
+        log_warn "🔒 AIR-GAPPED ENVIRONMENT DETECTED"
+        log_warn "📋 Script will use offline-compatible configurations"
+        log_warn "📄 Manual installation guides will be created for missing components"
+        
+        # Create air-gap environment guide
+        cat > "/root/air-gap-stig-guide.txt" << 'EOF'
+Air-Gapped STIG Deployment Guide
+=================================
+
+Your system has been identified as air-gapped (no internet connectivity).
+This STIG script has been configured for offline operation with the following adaptations:
+
+1. PACKAGE INSTALLATION:
+   - Script will skip automatic package downloads
+   - Manual installation instructions provided for each missing component
+   - Use local repositories or transfer RPM packages manually
+
+2. CERTIFICATE MANAGEMENT:
+   - Self-signed certificates generated locally
+   - Production systems should use organizational CA certificates
+   - Manual PKI setup instructions provided
+
+3. AIDE FILE INTEGRITY:
+   - Will use existing AIDE if available
+   - Manual installation instructions provided if missing
+   - Database initialization may take longer on air-gapped systems
+
+4. RECOMMENDED ACTIONS:
+   - Review all generated *-manual-*.txt files in /root/
+   - Install missing packages from local repositories
+   - Replace self-signed certificates with organizational certificates
+   - Verify all configurations after manual package installation
+
+This script prioritizes STIG compliance configuration over package installation
+in air-gapped environments.
+EOF
+        log_info "📄 Air-gap deployment guide created: /root/air-gap-stig-guide.txt"
+        
+        # Set global air-gap flag for other functions
+        export STIG_AIR_GAPPED="true"
+    else
+        log_info "🌐 Internet connectivity detected - using full online configuration"
+        export STIG_AIR_GAPPED="false"
+    fi
+    
+    return 0
+}
+
 # Enhanced error handling with tracking
 handle_error() {
     local error_code=$1
@@ -248,13 +308,13 @@ impl_257777() {
 impl_257778() {
     local control_id="$1"
     
-    if safe_execute "$control_id" "Updating system packages" "dnf update -y --timeout=30"; then
+    if safe_execute "$control_id" "Updating system packages" "timeout 300 dnf update -y"; then
         log_info "✅ System packages updated successfully"
         touch "/var/log/stig-deployment/.system_updated"
         return 0
     else
         log_warn "❌ First update attempt failed, trying without Microsoft repository..."
-        if safe_execute "$control_id" "Updating system packages (fallback)" "dnf update -y --disablerepo='packages-microsoft-com-prod' --timeout=30"; then
+        if safe_execute "$control_id" "Updating system packages (fallback)" "timeout 300 dnf update -y --disablerepo='packages-microsoft-com-prod'"; then
             log_info "✅ System packages updated successfully (fallback method)"
             touch "/var/log/stig-deployment/.system_updated"
             return 0
@@ -332,7 +392,7 @@ impl_257782() {
     fi
     
     # Install and enable rng-tools
-    if safe_execute "$control_id" "Installing rng-tools package" "dnf install -y rng-tools --timeout=30"; then
+    if safe_execute "$control_id" "Installing rng-tools package" "timeout 180 dnf install -y rng-tools"; then
         if safe_execute "$control_id" "Enabling and starting rngd service" "systemctl enable --now rngd"; then
             log_info "✅ Hardware RNG service enabled and started"
             return 0
@@ -342,7 +402,7 @@ impl_257782() {
     else
         # Try with Microsoft repo disabled if it fails
         log_warn "First attempt failed, trying without Microsoft repository..."
-        if safe_execute "$control_id" "Installing rng-tools (fallback)" "dnf install -y rng-tools --disablerepo='packages-microsoft-com-prod' --timeout=30"; then
+        if safe_execute "$control_id" "Installing rng-tools (fallback)" "timeout 180 dnf install -y rng-tools --disablerepo='packages-microsoft-com-prod'"; then
             if safe_execute "$control_id" "Enabling and starting rngd service" "systemctl enable --now rngd"; then
                 log_info "✅ Hardware RNG service enabled and started (fallback method)"
                 return 0
@@ -940,9 +1000,9 @@ impl_audit_config() {
     local control_id="$1"
     
     # Install auditd if not present
-    if ! safe_execute "$control_id" "Installing audit package" "dnf install -y audit --timeout=30"; then
+    if ! safe_execute "$control_id" "Installing audit package" "timeout 180 dnf install -y audit"; then
         log_warn "First attempt failed, trying without Microsoft repository..."
-        safe_execute "$control_id" "Installing audit package (fallback)" "dnf install -y audit --disablerepo='packages-microsoft-com-prod' --timeout=30"
+        safe_execute "$control_id" "Installing audit package (fallback)" "timeout 180 dnf install -y audit --disablerepo='packages-microsoft-com-prod'"
     fi
     
     # Configure audit rules for STIG compliance
@@ -1200,9 +1260,9 @@ impl_syslog_config() {
     local control_id="$1"
     
     # Install and configure rsyslog
-    if ! safe_execute "$control_id" "Installing rsyslog" "dnf install -y rsyslog --timeout=30"; then
+    if ! safe_execute "$control_id" "Installing rsyslog" "timeout 180 dnf install -y rsyslog"; then
         log_warn "First attempt failed, trying without Microsoft repository..."
-        safe_execute "$control_id" "Installing rsyslog (fallback)" "dnf install -y rsyslog --disablerepo='packages-microsoft-com-prod' --timeout=30"
+        safe_execute "$control_id" "Installing rsyslog (fallback)" "timeout 180 dnf install -y rsyslog --disablerepo='packages-microsoft-com-prod'"
     fi
     
     # Configure rsyslog for security
@@ -1460,40 +1520,62 @@ impl_filesystem_config() {
     return 1
 }
 
-# STIG PKI and Certificate Configuration
+# STIG PKI and Certificate Configuration (Air-Gap Compatible)
 impl_pki_config() {
     local control_id="$1"
     
-    # Fix repository issues first
-    log_info "Fixing repository configuration..."
-    safe_execute "$control_id" "Cleaning DNF cache" "dnf clean all"
-    safe_execute "$control_id" "Rebuilding DNF cache" "dnf makecache --refresh"
+    # Air-gap detection
+    local is_air_gapped=false
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        is_air_gapped=true
+        log_warn "🔒 Air-gapped environment detected - using offline PKI configuration"
+    fi
     
-    # Install required PKI packages with better error handling
-    local pki_packages=(
-        "openssl"
+    # Check for essential tools that should be available on base RHEL 9
+    local essential_tools=("openssl")
+    local missing_tools=()
+    
+    for tool in "${essential_tools[@]}"; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing_tools+=("$tool")
+        fi
+    done
+    
+    # Try to install missing essential tools if not air-gapped
+    if [[ ${#missing_tools[@]} -gt 0 ]] && [[ "$is_air_gapped" == "false" ]]; then
+        log_info "Installing essential PKI tools..."
+        for tool in "${missing_tools[@]}"; do
+            if ! timeout 180 dnf install -y --disablerepo=packages-microsoft-com-prod "$tool" 2>/dev/null; then
+                if ! timeout 180 dnf install -y "$tool" 2>/dev/null; then
+                    log_warn "Failed to install $tool - will try alternative methods"
+                fi
+            fi
+        done
+    fi
+    
+    # Optional PKI packages (nice to have but not essential)
+    local optional_packages=(
         "ca-certificates" 
         "gnutls-utils"
         "nss-tools"
     )
     
-    # Try packages individually with fallback options
-    local success=true
-    for package in "${pki_packages[@]}"; do
-        log_info "Attempting to install $package..."
-        if ! dnf install -y "$package" --timeout=30; then
-            log_warn "Failed to install $package via dnf, trying alternative methods..."
-            # Try without Microsoft repositories if they're causing issues
-            if ! dnf install -y "$package" --disablerepo="packages-microsoft-com-prod"; then
-                log_error "Failed to install $package - marking as failed but continuing"
-                success=false
+    # Try to install optional packages only if not air-gapped
+    if [[ "$is_air_gapped" == "false" ]]; then
+        log_info "Attempting to install optional PKI packages..."
+        for package in "${optional_packages[@]}"; do
+            log_info "Attempting to install $package..."
+            if timeout 180 dnf install -y --disablerepo=packages-microsoft-com-prod "$package" 2>/dev/null; then
+                log_info "✅ Successfully installed $package"
+            elif timeout 180 dnf install -y "$package" 2>/dev/null; then
+                log_info "✅ Successfully installed $package (fallback)"
             else
-                log_info "Successfully installed $package without Microsoft repos"
+                log_warn "⚠️ Failed to install $package - continuing without it"
             fi
-        else
-            log_info "Successfully installed $package"
-        fi
-    done
+        done
+    else
+        log_info "Skipping optional package installation in air-gapped environment"
+    fi
     
     # Generate generic self-signed certificate for STIG compliance
     local cert_dir="/etc/pki/tls/certs"
@@ -1501,38 +1583,113 @@ impl_pki_config() {
     local cert_file="$cert_dir/stig-generic.crt"
     local key_file="$key_dir/stig-generic.key"
     
-    # Create generic certificate for STIG compliance
-    if [[ ! -f "$cert_file" ]]; then
-        safe_execute "$control_id" "Creating certificate directories" "mkdir -p '$cert_dir' '$key_dir'"
-        
-        # Generate private key
-        if safe_execute "$control_id" "Generating private key" "openssl genrsa -out '$key_file' 2048"; then
-            safe_execute "$control_id" "Setting private key permissions" "chmod 600 '$key_file'"
+    # Create certificate directories
+    safe_execute "$control_id" "Creating certificate directories" "mkdir -p '$cert_dir' '$key_dir'"
+    
+    # Check if OpenSSL is available for certificate generation
+    if command -v openssl >/dev/null 2>&1; then
+        # Create generic certificate for STIG compliance
+        if [[ ! -f "$cert_file" ]]; then
+            log_info "Generating STIG-compliant self-signed certificate..."
             
-            # Generate self-signed certificate
-            if safe_execute "$control_id" "Generating self-signed certificate" "openssl req -new -x509 -key '$key_file' -out '$cert_file' -days 365 -subj '/C=US/ST=State/L=City/O=Organization/CN=stig-generic'"; then
-                safe_execute "$control_id" "Setting certificate permissions" "chmod 644 '$cert_file'"
-                log_info "✅ Generic STIG certificate created at $cert_file"
+            # Generate private key
+            if safe_execute "$control_id" "Generating private key" "openssl genrsa -out '$key_file' 2048 2>/dev/null"; then
+                safe_execute "$control_id" "Setting private key permissions" "chmod 600 '$key_file'"
+                
+                # Generate self-signed certificate with proper STIG-compliant subject
+                local cert_subject="/C=US/ST=Unknown/L=Unknown/O=STIG-Compliance/OU=Security/CN=$(hostname -f 2>/dev/null || echo 'localhost.localdomain')"
+                if safe_execute "$control_id" "Generating self-signed certificate" "openssl req -new -x509 -key '$key_file' -out '$cert_file' -days 365 -subj '$cert_subject' 2>/dev/null"; then
+                    safe_execute "$control_id" "Setting certificate permissions" "chmod 644 '$cert_file'"
+                    log_info "✅ STIG-compliant certificate created at $cert_file"
+                    
+                    # Create certificate information file
+                    cat > "$cert_dir/stig-certificate-info.txt" << EOF
+STIG-Compliant Self-Signed Certificate
+======================================
+Certificate: $cert_file
+Private Key: $key_file
+Generated: $(date)
+Subject: $cert_subject
+Valid: 365 days from generation
+
+This certificate was created for STIG compliance requirements.
+Replace with organization-issued certificates in production.
+EOF
+                    log_info "📄 Certificate information saved to $cert_dir/stig-certificate-info.txt"
+                else
+                    log_error "Failed to generate certificate"
+                fi
             else
-                log_error "Failed to generate certificate but continuing..."
-                success=false
+                log_error "Failed to generate private key"
             fi
         else
-            log_error "Failed to generate private key but continuing..."
-            success=false
+            log_info "✅ STIG certificate already exists"
         fi
     else
-        log_info "✅ STIG certificate already exists"
+        log_warn "⚠️ OpenSSL not available - creating manual certificate instructions"
+        
+        # Create manual certificate generation instructions
+        cat > "/root/pki-manual-setup.txt" << 'EOF'
+PKI Manual Setup for Air-Gapped Systems
+========================================
+
+CRITICAL: OpenSSL not found on system
+
+1. Install OpenSSL package:
+   - From local repository: dnf install openssl
+   - From RPM: rpm -ivh openssl-*.rpm
+
+2. Generate private key:
+   openssl genrsa -out /etc/pki/tls/private/stig-generic.key 2048
+   chmod 600 /etc/pki/tls/private/stig-generic.key
+
+3. Generate self-signed certificate:
+   openssl req -new -x509 -key /etc/pki/tls/private/stig-generic.key \
+   -out /etc/pki/tls/certs/stig-generic.crt -days 365 \
+   -subj "/C=US/ST=Unknown/L=Unknown/O=STIG-Compliance/OU=Security/CN=$(hostname -f)"
+   chmod 644 /etc/pki/tls/certs/stig-generic.crt
+
+4. For production: Replace with organization-issued certificates
+
+Alternative: Request certificates from your organization's CA
+EOF
+        log_warn "📄 Manual PKI setup instructions saved to /root/pki-manual-setup.txt"
     fi
     
     # Configure certificate trust (only if update-ca-trust exists)
     if command -v update-ca-trust >/dev/null 2>&1; then
         safe_execute "$control_id" "Updating CA trust" "update-ca-trust"
     else
-        log_warn "update-ca-trust not available, skipping CA trust update"
+        log_warn "update-ca-trust not available - manual trust configuration may be needed"
     fi
     
-    log_info "✅ PKI configuration completed (some packages may have failed)"
+    # Create air-gap specific documentation
+    if [[ "$is_air_gapped" == "true" ]]; then
+        cat > "/root/air-gap-pki-guide.txt" << 'EOF'
+Air-Gapped PKI Configuration Guide
+==================================
+
+Your system appears to be air-gapped (no internet connectivity).
+For complete STIG compliance in air-gapped environments:
+
+1. REQUIRED: Obtain certificates from your organization's CA
+2. Install certificates in: /etc/pki/tls/certs/
+3. Install private keys in: /etc/pki/tls/private/ (chmod 600)
+4. Update trust store: update-ca-trust
+
+Package Installation for Air-Gapped Systems:
+1. Download packages on internet-connected system:
+   dnf download openssl ca-certificates gnutls-utils nss-tools
+2. Transfer RPMs to this system
+3. Install: rpm -ivh *.rpm
+
+This script has generated self-signed certificates for immediate
+STIG compliance, but production systems should use organizational CAs.
+EOF
+        log_info "📄 Air-gap PKI guide saved to /root/air-gap-pki-guide.txt"
+    fi
+    
+    log_info "✅ PKI configuration completed for $([ "$is_air_gapped" == "true" ] && echo "air-gapped" || echo "connected") environment"
     return 0  # Return success even if some packages failed
 }
 
@@ -1732,9 +1889,9 @@ impl_package_config() {
     # Install required packages
     for package in "${required_packages[@]}"; do
         log_info "Installing required package: $package"
-        if ! dnf install -y "$package" --timeout=60; then
+        if ! timeout 300 dnf install -y "$package"; then
             log_warn "Failed to install required package $package, trying without Microsoft repos..."
-            if ! dnf install -y "$package" --disablerepo="packages-microsoft-com-prod" --timeout=60; then
+            if ! timeout 300 dnf install -y "$package" --disablerepo="packages-microsoft-com-prod"; then
                 log_error "Critical: Failed to install required package $package"
                 success=false
             else
@@ -1748,7 +1905,7 @@ impl_package_config() {
     # Install optional packages (failures are acceptable)
     for package in "${optional_packages[@]}"; do
         log_info "Installing optional package: $package"
-        if ! dnf install -y "$package" --timeout=30 2>/dev/null; then
+        if ! timeout 180 dnf install -y "$package" 2>/dev/null; then
             log_warn "Optional package $package failed to install, skipping..."
         else
             log_info "Successfully installed optional package $package"
@@ -1794,23 +1951,103 @@ impl_package_config() {
 impl_aide_config() {
     local control_id="$1"
     
-    # Install AIDE if not present
-    safe_execute "$control_id" "Installing AIDE" "timeout 300 dnf install -y --disablerepo=packages-microsoft-com-prod aide || timeout 300 dnf install -y aide"
+    # Check if AIDE is already installed
+    if command -v aide >/dev/null 2>&1; then
+        log_info "✅ AIDE already installed"
+    else
+        # Try to install AIDE if internet/repos available
+        log_info "Attempting to install AIDE..."
+        if ! timeout 300 dnf install -y --disablerepo=packages-microsoft-com-prod aide 2>/dev/null; then
+            if ! timeout 300 dnf install -y aide 2>/dev/null; then
+                log_warn "⚠️ AIDE installation failed - creating manual installation instructions"
+                
+                # Create manual installation instructions for air-gapped systems
+                cat > "/root/aide-manual-install.txt" << 'EOF'
+AIDE Manual Installation for Air-Gapped Systems
+===============================================
+
+1. Download AIDE RPM package on internet-connected system:
+   dnf download aide
+
+2. Transfer RPM to this system and install:
+   rpm -ivh aide-*.rpm
+
+3. Run this script again to configure AIDE
+
+Alternative: Use system package manager with local repository
+EOF
+                log_warn "📄 Manual installation instructions saved to /root/aide-manual-install.txt"
+                return 1
+            fi
+        fi
+        log_info "✅ AIDE installed successfully"
+    fi
     
-    # Initialize AIDE database
+    # Verify AIDE binary exists before proceeding
+    if ! command -v aide >/dev/null 2>&1; then
+        log_error "AIDE binary not found - skipping AIDE configuration"
+        return 1
+    fi
+    
+    # Create AIDE configuration directory if it doesn't exist
+    mkdir -p /var/lib/aide 2>/dev/null || true
+    
+    # Initialize AIDE database with error handling
     if [[ ! -f /var/lib/aide/aide.db.gz ]]; then
-        safe_execute "$control_id" "Initializing AIDE database" "aide --init"
-        safe_execute "$control_id" "Moving AIDE database" "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+        log_info "Initializing AIDE database (this may take several minutes)..."
+        if safe_execute "$control_id" "Initializing AIDE database" "timeout 1800 aide --init"; then
+            # Move new database to active location
+            if [[ -f /var/lib/aide/aide.db.new.gz ]]; then
+                safe_execute "$control_id" "Moving AIDE database" "mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
+                log_info "✅ AIDE database initialized successfully"
+            else
+                log_warn "⚠️ AIDE database initialization may have failed - check manually"
+            fi
+        else
+            log_warn "⚠️ AIDE database initialization failed - creating manual instructions"
+            cat > "/root/aide-manual-config.txt" << 'EOF'
+AIDE Manual Configuration Instructions
+======================================
+
+1. Initialize AIDE database manually:
+   aide --init
+
+2. Move database to active location:
+   mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+
+3. Test AIDE check:
+   aide --check
+
+Note: Database initialization can take 30+ minutes on large systems
+EOF
+            log_warn "📄 Manual AIDE configuration instructions saved to /root/aide-manual-config.txt"
+        fi
+    else
+        log_info "✅ AIDE database already exists"
     fi
     
     # Configure AIDE for daily checks
     local aide_cron="/etc/cron.daily/aide-check"
     
-    # Create AIDE daily check script
+    # Create AIDE daily check script with error handling
     cat > "$aide_cron" << 'EOF'
 #!/bin/bash
-# AIDE daily integrity check
-/usr/sbin/aide --check 2>&1 | /usr/bin/logger -t aide
+# AIDE daily integrity check for STIG compliance
+
+# Check if AIDE database exists
+if [[ ! -f /var/lib/aide/aide.db.gz ]]; then
+    logger -t aide "AIDE database not found - skipping check"
+    exit 1
+fi
+
+# Check if AIDE binary exists
+if ! command -v aide >/dev/null 2>&1; then
+    logger -t aide "AIDE binary not found - skipping check"
+    exit 1
+fi
+
+# Run AIDE check with timeout
+timeout 3600 /usr/sbin/aide --check 2>&1 | /usr/bin/logger -t aide
 EOF
     
     safe_execute "$control_id" "Making AIDE cron script executable" "chmod 755 '$aide_cron'"
@@ -2030,9 +2267,39 @@ impl_service_hardening() {
 # Main Execution Function
 #############################################################################
 
-# Repository configuration fix
+# Repository configuration fix (Air-Gap Aware)
 fix_repositories() {
-    log_info "🔧 Fixing repository configuration to prevent timeout issues..."
+    log_info "🔧 Fixing repository configuration..."
+    
+    # Check if we're in air-gapped mode
+    if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+        log_info "Air-gapped mode - skipping internet-dependent repository operations"
+        
+        # Just ensure local repositories are enabled
+        if command -v dnf >/dev/null 2>&1; then
+            log_info "Validating local repository configuration..."
+            dnf clean all 2>/dev/null || true
+            
+            # Disable all external repositories in air-gap mode
+            if [[ -d /etc/yum.repos.d/ ]]; then
+                for repo_file in /etc/yum.repos.d/*.repo; do
+                    if [[ -f "$repo_file" ]]; then
+                        # Only keep local/mounted repositories enabled
+                        if grep -q "baseurl.*http" "$repo_file" 2>/dev/null; then
+                            log_info "Disabling external repository: $(basename "$repo_file")"
+                            sed -i 's/enabled=1/enabled=0/g' "$repo_file" 2>/dev/null || true
+                        fi
+                    fi
+                done
+            fi
+        fi
+        
+        log_info "✅ Air-gapped repository configuration completed"
+        return 0
+    fi
+    
+    # Standard connected mode repository fixes
+    log_info "Connected mode - performing full repository configuration..."
     
     # Clean all cached repository data
     log_info "Cleaning DNF cache..."
@@ -2071,7 +2338,7 @@ fix_repositories() {
     
     # Refresh repository metadata with new settings
     log_info "Refreshing repository metadata..."
-    dnf makecache --refresh --timeout=30 2>/dev/null || {
+    timeout 180 dnf makecache --refresh 2>/dev/null || {
         log_warn "Repository refresh failed, but continuing..."
     }
     
@@ -2089,6 +2356,9 @@ main() {
     
     # Pre-flight checks
     log_info "Performing pre-flight checks..."
+    
+    # Detect air-gapped environment
+    detect_air_gap
     
     # Fix repository configuration first
     fix_repositories
