@@ -1056,10 +1056,10 @@ impl_audit_config() {
         else
             log_warn "⚠️ No repositories available for audit package installation"
             log_warn "Manual action required: Install audit package manually when repositories are available"
-            if [[ "$STIG_AIR_GAPPED" == "true" ]]; then
-                echo "# Manual audit package installation required" >> "/root/manual-package-install.txt"
-                echo "# Run when repositories are available: dnf install -y audit" >> "/root/manual-package-install.txt"
-                echo "" >> "/root/manual-package-install.txt"
+            if [[ "$IS_AIR_GAP" == true ]]; then
+                echo "# Manual audit package installation required" >> "$MANUAL_INSTALL_GUIDE"
+                echo "# Run when repositories are available: dnf install -y audit" >> "$MANUAL_INSTALL_GUIDE"
+                echo "" >> "$MANUAL_INSTALL_GUIDE"
             fi
         fi
     fi
@@ -1356,10 +1356,10 @@ impl_syslog_config() {
         else
             log_warn "⚠️ No repositories available for rsyslog package installation"
             log_warn "Manual action required: Install rsyslog package manually when repositories are available"
-            if [[ "$STIG_AIR_GAPPED" == "true" ]]; then
-                echo "# Manual rsyslog package installation required" >> "/root/manual-package-install.txt"
-                echo "# Run when repositories are available: dnf install -y rsyslog" >> "/root/manual-package-install.txt"
-                echo "" >> "/root/manual-package-install.txt"
+            if [[ "$IS_AIR_GAP" == true ]]; then
+                echo "# Manual rsyslog package installation required" >> "$MANUAL_INSTALL_GUIDE"
+                echo "# Run when repositories are available: dnf install -y rsyslog" >> "$MANUAL_INSTALL_GUIDE"
+                echo "" >> "$MANUAL_INSTALL_GUIDE"
             fi
         fi
     fi
@@ -2183,10 +2183,10 @@ impl_fips_config() {
     else
         log_warn "⚠️ No repositories available for FIPS package installation"
         log_warn "Manual action required: Install dracut-fips package manually when repositories are available"
-        if [[ "$STIG_AIR_GAPPED" == "true" ]]; then
-            echo "# Manual FIPS package installation required" >> "/root/manual-package-install.txt"
-            echo "# Run when repositories are available: dnf install -y dracut-fips" >> "/root/manual-package-install.txt"
-            echo "" >> "/root/manual-package-install.txt"
+        if [[ "$IS_AIR_GAP" == true ]]; then
+            echo "# Manual FIPS package installation required" >> "$MANUAL_INSTALL_GUIDE"
+            echo "# Run when repositories are available: dnf install -y dracut-fips" >> "$MANUAL_INSTALL_GUIDE"
+            echo "" >> "$MANUAL_INSTALL_GUIDE"
         fi
     fi
     
