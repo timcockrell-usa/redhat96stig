@@ -310,12 +310,9 @@ impl_257778() {
     
     # Check if air-gapped - skip updates if no repositories available
     if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
-        # Check if any repositories are available
-        if ! dnf repolist enabled 2>/dev/null | grep -q "repo id"; then
-            log_warn "⚠️ Air-gapped system with no enabled repositories - skipping system updates"
-            log_info "📋 Manual update required: Mount installation media or configure local repositories"
-            
-            # Create manual update guide
+        log_warn "⚠️ Air-gapped environment detected - skipping automatic updates"
+        log_warn "Manual action required: Configure local repository and update manually"
+        if ! [[ -f "/root/manual-system-update.txt" ]]; then
             cat > "/root/manual-system-update.txt" << 'EOF'
 Manual System Update for Air-Gapped Systems
 ============================================
@@ -355,12 +352,6 @@ EOF
             return 0
         else
             log_warn "❌ Failed to update system packages - some subsequent controls may fail"
-            
-            # For air-gapped systems, this is acceptable
-            if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
-                log_info "📋 Air-gapped system - manual updates may be required"
-                return 0  # Return success for air-gapped systems
-            fi
             return 1
         fi
     fi
@@ -1056,10 +1047,9 @@ impl_audit_config() {
         else
             log_warn "⚠️ No repositories available for audit package installation"
             log_warn "Manual action required: Install audit package manually when repositories are available"
-            if [[ "$IS_AIR_GAP" == true ]]; then
-                echo "# Manual audit package installation required" >> "$MANUAL_INSTALL_GUIDE"
-                echo "# Run when repositories are available: dnf install -y audit" >> "$MANUAL_INSTALL_GUIDE"
-                echo "" >> "$MANUAL_INSTALL_GUIDE"
+            if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+                echo "# Manual audit package installation required" >> "/root/manual-package-install.txt"
+                echo "dnf install audit" >> "/root/manual-package-install.txt"
             fi
         fi
     fi
@@ -1108,7 +1098,6 @@ impl_audit_config() {
         "-w /etc/hostname -p wa -k system-locale"
     )
     
-    # Write all rules to file (overwriting to prevent duplicates)
     local success=true
     for rule in "${audit_rules[@]}"; do
         if ! safe_execute "$control_id" "Adding audit rule: $rule" "echo '$rule' >> '$audit_rules_file'"; then
@@ -1157,27 +1146,8 @@ impl_audit_config() {
     if [[ "$success" == true ]]; then
         # Enable and start auditd
         safe_execute "$control_id" "Enabling auditd service" "systemctl enable auditd"
-        
-        # Check if auditd is running before restarting
-        if systemctl is-active auditd >/dev/null 2>&1; then
-            log_info "Auditd is running, restarting to reload configuration..."
-            safe_execute "$control_id" "Restarting auditd service" "systemctl restart auditd"
-        else
-            safe_execute "$control_id" "Starting auditd service" "systemctl start auditd"
-        fi
-        
-        # Wait a moment for service to start
-        sleep 2
-        
-        # Load audit rules with error checking
-        if safe_execute "$control_id" "Loading audit rules" "augenrules --load"; then
-            log_info "✅ Audit rules loaded successfully"
-        else
-            log_warn "⚠️ Warning: Audit rules may have conflicts, manual review required"
-            # Try to check current rules
-            safe_execute "$control_id" "Checking current audit rules" "auditctl -l | head -10"
-        fi
-        
+        safe_execute "$control_id" "Starting auditd service" "systemctl start auditd"
+        safe_execute "$control_id" "Loading audit rules" "augenrules --load"
         log_info "✅ Comprehensive audit system configured"
         return 0
     fi
@@ -1356,10 +1326,9 @@ impl_syslog_config() {
         else
             log_warn "⚠️ No repositories available for rsyslog package installation"
             log_warn "Manual action required: Install rsyslog package manually when repositories are available"
-            if [[ "$IS_AIR_GAP" == true ]]; then
-                echo "# Manual rsyslog package installation required" >> "$MANUAL_INSTALL_GUIDE"
-                echo "# Run when repositories are available: dnf install -y rsyslog" >> "$MANUAL_INSTALL_GUIDE"
-                echo "" >> "$MANUAL_INSTALL_GUIDE"
+            if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+                echo "# Manual rsyslog package installation required" >> "/root/manual-package-install.txt"
+                echo "dnf install rsyslog" >> "/root/manual-package-install.txt"
             fi
         fi
     fi
@@ -1383,8 +1352,7 @@ impl_syslog_config() {
         "authpriv.info                   /var/log/secure"
     )
     
-    # Clear existing configuration to prevent duplicates
-    safe_execute "$control_id" "Creating STIG rsyslog configuration" "echo '# STIG Rsyslog Configuration - Generated by RHEL 9 STIG Script' > '$rsyslog_stig'"
+    safe_execute "$control_id" "Creating STIG rsyslog configuration" "touch '$rsyslog_stig'"
     
     local success=true
     for rule in "${rsyslog_rules[@]}"; do
@@ -2174,19 +2142,15 @@ impl_fips_config() {
     
     # Install FIPS packages if repositories are available
     if [[ "$repo_available" == true ]]; then
-        if ! rpm -q dracut-fips >/dev/null 2>&1; then
-            if ! safe_execute "$control_id" "Installing FIPS packages" "timeout 300 dnf install -y dracut-fips"; then
-                log_warn "First attempt failed, trying with different repository options..."
-                safe_execute "$control_id" "Installing FIPS packages (fallback)" "timeout 300 dnf install -y dracut-fips --disablerepo='packages-microsoft-com-prod,rh-cloud'"
-            fi
+        if ! safe_execute "$control_id" "Installing FIPS packages" "timeout 300 dnf install -y dracut-fips"; then
+            safe_execute "$control_id" "Installing FIPS packages (fallback)" "timeout 300 dnf install -y dracut-fips --disablerepo='packages-microsoft-com-prod,rh-cloud'"
         fi
     else
         log_warn "⚠️ No repositories available for FIPS package installation"
         log_warn "Manual action required: Install dracut-fips package manually when repositories are available"
-        if [[ "$IS_AIR_GAP" == true ]]; then
-            echo "# Manual FIPS package installation required" >> "$MANUAL_INSTALL_GUIDE"
-            echo "# Run when repositories are available: dnf install -y dracut-fips" >> "$MANUAL_INSTALL_GUIDE"
-            echo "" >> "$MANUAL_INSTALL_GUIDE"
+        if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+            echo "# Manual FIPS package installation required" >> "/root/manual-package-install.txt"
+            echo "dnf install dracut-fips" >> "/root/manual-package-install.txt"
         fi
     fi
     
@@ -2394,65 +2358,24 @@ fix_repositories() {
     
     # Check if we're in air-gapped mode
     if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
-        log_info "Air-gapped mode - configuring for local repositories only"
+        log_info "Air-gapped mode - skipping internet-dependent repository operations"
         
         # Just ensure local repositories are enabled
         if command -v dnf >/dev/null 2>&1; then
             log_info "Validating local repository configuration..."
             dnf clean all 2>/dev/null || true
             
-            # Keep RHEL repositories enabled but disable external ones
+            # Disable all external repositories in air-gap mode
             if [[ -d /etc/yum.repos.d/ ]]; then
                 for repo_file in /etc/yum.repos.d/*.repo; do
                     if [[ -f "$repo_file" ]]; then
-                        # Disable external repositories but keep RHEL ones
-                        if [[ "$(basename "$repo_file")" =~ ^(microsoft|rh-cloud|epel|docker|kubernetes) ]]; then
+                        # Only keep local/mounted repositories enabled
+                        if grep -q "baseurl.*http" "$repo_file" 2>/dev/null; then
                             log_info "Disabling external repository: $(basename "$repo_file")"
                             sed -i 's/enabled=1/enabled=0/g' "$repo_file" 2>/dev/null || true
-                        else
-                            # For RHEL repos, ensure they're enabled if they exist locally
-                            log_info "Keeping RHEL repository: $(basename "$repo_file")"
                         fi
                     fi
                 done
-            fi
-            
-            # Check if any repositories are available
-            if dnf repolist enabled 2>/dev/null | grep -q "repo id"; then
-                log_info "✅ Local repositories available for package installation"
-            else
-                log_warn "⚠️ No enabled repositories found - package installation will fail"
-                log_warn "📋 Manual package installation will be required"
-                
-                # Create manual package installation guide
-                cat > "/root/manual-package-install.txt" << 'EOF'
-Manual Package Installation for Air-Gapped Systems
-===================================================
-
-No enabled repositories detected. To install required packages:
-
-OPTION 1: Enable local repositories
-1. Mount RHEL installation media
-2. Configure local repository pointing to mounted media
-3. Re-run this script
-
-OPTION 2: Install packages manually
-Required packages: audit rsyslog rng-tools aide
-
-1. On internet-connected system:
-   dnf download audit rsyslog rng-tools aide
-
-2. Transfer RPM files to this system
-
-3. Install manually:
-   rpm -ivh audit-*.rpm rsyslog-*.rpm rng-tools-*.rpm aide-*.rpm
-
-4. Re-run this script after package installation
-
-OPTION 3: Configure subscription or local mirror
-Contact your system administrator for access to appropriate repositories.
-EOF
-                log_warn "📄 Manual package installation guide: /root/manual-package-install.txt"
             fi
         fi
         
