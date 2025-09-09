@@ -4,7 +4,7 @@
 #                                                                           #
 #  RHEL 9 STIG Complete Deployment Script for Microsoft Azure              #
 #  Version: 2.0 - Enhanced Error Handling                                  #
-#  Date: 2025-08-28                                                         #
+#  Date: 2025-09-09                                                         #
 #  Purpose: Automate DISA STIG compliance with comprehensive error handling#
 #           while preserving Azure Bastion connectivity                     #
 #                                                                           #
