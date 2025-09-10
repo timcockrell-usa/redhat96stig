@@ -308,10 +308,18 @@ impl_257777() {
 impl_257778() {
     local control_id="$1"
     
-    # Check if air-gapped - skip updates if no repositories available
-    if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
-        log_warn "⚠️ Air-gapped environment detected - skipping automatic updates"
-        log_warn "Manual action required: Configure local repository and update manually"
+    # Check if repositories are available
+    if ! dnf repolist enabled &>/dev/null || [[ $(dnf repolist enabled --quiet 2>/dev/null | wc -l) -eq 0 ]]; then
+        log_warn "⚠️ No enabled repositories available - skipping automatic updates"
+        log_warn "Manual action required: Configure repositories and update manually"
+        
+        # Set air-gapped flag if not already set
+        if [[ "${STIG_AIR_GAPPED:-false}" != "true" ]]; then
+            export STIG_AIR_GAPPED=true
+            log_info "Setting STIG_AIR_GAPPED=true due to repository unavailability"
+        fi
+        
+        # Create manual update guide
         if ! [[ -f "/root/manual-system-update.txt" ]]; then
             cat > "/root/manual-system-update.txt" << 'EOF'
 Manual System Update for Air-Gapped Systems
@@ -321,7 +329,9 @@ System updates could not be performed automatically due to no available reposito
 
 OPTION 1: Configure local repository from installation media
 1. Mount RHEL installation media
-2. Configure local repository
+2. Configure local repository: 
+   - Create .repo file in /etc/yum.repos.d/
+   - Enable repository: dnf config-manager --enable <repo-name>
 3. Run: dnf update -y
 
 OPTION 2: Download and apply updates manually
@@ -331,13 +341,22 @@ OPTION 2: Download and apply updates manually
 3. Install: rpm -Uvh *.rpm
 
 OPTION 3: Use subscription management
-Configure appropriate Red Hat subscription or satellite server access.
+Configure appropriate Red Hat subscription or satellite server access:
+- subscription-manager register
+- subscription-manager attach --auto
 
 Current system appears up-to-date for STIG compliance purposes.
 EOF
             log_warn "📄 Manual update guide created: /root/manual-system-update.txt"
-            return 0  # Return success for STIG compliance
         fi
+        return 0  # Return success for STIG compliance even without updates
+    fi
+    
+    # Check if air-gapped - skip updates if no repositories available
+    if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+        log_warn "⚠️ Air-gapped environment detected - skipping automatic updates"
+        log_warn "Manual action required: Configure local repository and update manually"
+        return 0  # Return success for STIG compliance
     fi
     
     if safe_execute "$control_id" "Updating system packages" "timeout 300 dnf update -y"; then
@@ -1167,7 +1186,7 @@ impl_audit_config() {
     
     for setting in "${auditd_settings[@]}"; do
         local key="${setting%% = *}"
-        safe_execute "$control_id" "Configuring auditd: $setting" "sed -i \"s/^${key}.*/${setting}/\" '$auditd_conf'"
+        safe_execute "$control_id" "Configuring auditd: $setting" "sed -i \"s|^${key}.*|${setting}|\" '$auditd_conf'"
     done
     
     if [[ "$success" == true ]]; then
@@ -1576,7 +1595,7 @@ impl_filesystem_config() {
     
     # Add nodev,nosuid,noexec to /tmp if it exists as separate mount
     if mount | grep -q " /tmp "; then
-        safe_execute "$control_id" "Securing /tmp mount options" "sed -i '/\/tmp/s/defaults/defaults,nodev,nosuid,noexec/' '$fstab_file'"
+        safe_execute "$control_id" "Securing /tmp mount options" "sed -i '|/tmp|s|defaults|defaults,nodev,nosuid,noexec|' '$fstab_file'"
     fi
     
     # Set proper permissions on critical directories
@@ -2206,7 +2225,7 @@ impl_banner_config() {
         
         # Configure SSH banner
         if grep -q "^Banner" "$ssh_config"; then
-            safe_execute "$control_id" "Updating SSH banner" "sed -i 's/^Banner.*/Banner \/etc\/issue/' '$ssh_config'"
+            safe_execute "$control_id" "Updating SSH banner" "sed -i 's|^Banner.*|Banner /etc/issue|' '$ssh_config'"
         else
             safe_execute "$control_id" "Adding SSH banner" "echo 'Banner /etc/issue' >> '$ssh_config'"
         fi
