@@ -1327,11 +1327,14 @@ impl_umask_config() {
     local success=true
     for file in "${umask_files[@]}"; do
         if [[ -f "$file" ]]; then
-            if grep -q "umask" "$file"; then
-                if ! safe_execute "$control_id" "Updating umask in $file" "sed -i 's/umask.*/umask 077/' '$file'"; then
+            # Safely update umask without corrupting file structure
+            if grep -q "^umask " "$file"; then
+                # Replace existing umask lines
+                if ! safe_execute "$control_id" "Updating umask in $file" "sed -i 's|^umask [0-9]*|umask 077|' '$file'"; then
                     success=false
                 fi
             else
+                # Add umask if not present
                 if ! safe_execute "$control_id" "Adding umask to $file" "echo 'umask 077' >> '$file'"; then
                     success=false
                 fi
