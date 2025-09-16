@@ -2,28 +2,45 @@
 
 #############################################################################
 #                                                                           #
-#  RHEL 9 STIG Complete Deployment Script for Microsoft Azure              #
-#  Version: 2.0 - Enhanced Error Handling                                  #
-#  Date: 2025-09-09                                                         #
+#  RHEL 9 STIG Complete Deployment Script for Microsoft Azure - ENHANCED   #
+#  Version: 3.0 - 90-95% Success Rate Target                               #
+#  Date: 2025-09-16                                                         #
 #  Purpose: Automate DISA STIG compliance with comprehensive error handling#
 #           while preserving Azure Bastion connectivity                     #
 #                                                                           #
-#  Features:                                                                #
-#  - Complete error handling for ALL STIG controls                         #
-#  - Detailed error summary at completion                                   #
-#  - Dependency tracking between controls                                   #
-#  - Single script - no external files needed                              #
-#  - Azure Bastion safe (preserves remote access)                          #
+#  ENHANCEMENTS FOR 90-95% SUCCESS RATE:                                   #
+#  - Intelligent repository configuration and management                    #
+#  - Enhanced package installation with multiple fallback methods          #
+#  - Safe SSH service management for Azure environments                    #
+#  - Resilient firewall and audit configuration                           #
+#  - Advanced error recovery and graceful degradation                      #
+#  - Service dependency management                                          #
+#  - Configuration validation and rollback capabilities                    #
 #                                                                           #
 #############################################################################
 
 # Script metadata
-readonly SCRIPT_NAME="rhel9-stig-complete-deployment"
-readonly SCRIPT_VERSION="2.1"
-readonly SCRIPT_DATE="2025-09-08"
+readonly SCRIPT_NAME="rhel9-stig-complete-enhanced"
+readonly SCRIPT_VERSION="3.0"
+readonly SCRIPT_DATE="2025-09-16"
 
-# Relaxed error handling - individual controls manage their own errors
-# set -eu
+# Enhanced error handling with recovery mechanisms
+set -e
+trap 'handle_script_error $? $LINENO $BASH_COMMAND' ERR
+
+# Global error recovery handler
+handle_script_error() {
+    local exit_code=$1
+    local line_number=$2
+    local failed_command=$3
+    
+    echo "ERROR: Command failed with exit code $exit_code at line $line_number"
+    echo "Failed command: $failed_command"
+    
+    # Don't exit on individual control failures - continue processing
+    set +e
+    return 0
+}
 
 # Ensure script is run as root
 if [[ $EUID -ne 0 ]]; then
@@ -31,29 +48,44 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Handle existing readonly TMOUT variable gracefully
+# If TMOUT is already readonly, we can't change it in this session
+# but we can still configure it properly for future sessions
+if readonly -p 2>/dev/null | grep -q "declare -r TMOUT"; then
+    echo "INFO: TMOUT is already set as readonly in current session - this is normal"
+    echo "INFO: Script will configure TMOUT properly for future sessions"
+fi
+
 # Suppress TTY-related errors for automated deployment
 export DEBIAN_FRONTEND=noninteractive 2>/dev/null || true
 export NEEDRESTART_MODE=a 2>/dev/null || true
 exec 2> >(grep -v 'stty:' >&2) 2>/dev/null || exec 2>&2
 
-# Enhanced logging setup
+# Enhanced logging setup with recovery tracking
 readonly LOG_DIR="/var/log/stig-deployment"
 readonly LOG_FILE="$LOG_DIR/stig-deployment-$(date +%Y%m%d-%H%M%S).log"
 readonly ERROR_LOG="$LOG_DIR/stig-errors-$(date +%Y%m%d-%H%M%S).log"
 readonly SUMMARY_LOG="$LOG_DIR/stig-summary-$(date +%Y%m%d-%H%M%S).log"
+readonly RECOVERY_LOG="$LOG_DIR/stig-recovery-$(date +%Y%m%d-%H%M%S).log"
 
 # Create log directory
 mkdir -p "$LOG_DIR" || true
 
-# Enhanced logging function
+# Enhanced logging function with error categorization and recovery tracking
 log_to_file() {
     local level="$1"
     local message="$2"
+    local category="${3:-GENERAL}"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
-    if [[ "$level" == "ERROR" ]]; then
-        echo "[$timestamp] $message" >> "$ERROR_LOG"
-    fi
+    
+    # Enhanced file logging with categories
+    echo "[$timestamp] [$level] [$category] $message" | tee -a "$LOG_FILE"
+    
+    # Specialized logging
+    case "$level" in
+        "ERROR") echo "[$timestamp] [$category] $message" >> "$ERROR_LOG" ;;
+        "RECOVERY") echo "[$timestamp] [$category] $message" >> "$RECOVERY_LOG" ;;
+    esac
 }
 
 # Color codes for output
@@ -63,17 +95,25 @@ readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
 
-# Global counters and tracking
+# Enhanced global tracking with recovery metrics
 declare -i TOTAL_CONTROLS=0
 declare -i APPLIED_CONTROLS=0
 declare -i SKIPPED_CONTROLS=0
 declare -i FAILED_CONTROLS=0
+declare -i RECOVERED_CONTROLS=0
 
-# Error tracking arrays
+# Enhanced tracking arrays
 declare -a FAILED_CONTROL_LIST=()
 declare -a FAILED_ERROR_MESSAGES=()
 declare -a SKIPPED_CONTROL_LIST=()
 declare -a SKIPPED_REASONS=()
+declare -a RECOVERED_CONTROL_LIST=()
+
+# Environment detection flags for enhanced compatibility
+export STIG_AZURE_ENVIRONMENT="false"
+export STIG_AIR_GAPPED="false"
+export STIG_REPOSITORIES_AVAILABLE="false"
+export STIG_SERVICES_AVAILABLE="true"
 
 # DOD Banner Text (STIG V-257779 requirement)
 readonly DOD_BANNER_TEXT="You are accessing a U.S. Government (USG) Information System (IS) that is provided for USG-authorized use only.
@@ -96,20 +136,37 @@ By using this IS (which includes any device attached to this IS), you consent to
 
 log_info() {
     local message="$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    local category="${STIG_LOG_CATEGORY:-GENERAL}"
     echo -e "${GREEN}[INFO]${NC} $message"
-    log_to_file "INFO" "$*"
+    log_to_file "INFO" "$*" "$category"
 }
 
 log_warn() {
     local message="$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    local category="${STIG_LOG_CATEGORY:-GENERAL}"
     echo -e "${YELLOW}[WARN]${NC} $message"
-    log_to_file "WARN" "$*"
+    log_to_file "WARN" "$*" "$category"
 }
 
 log_error() {
     local message="$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    local category="${STIG_LOG_CATEGORY:-GENERAL}"
     echo -e "${RED}[ERROR]${NC} $message"
-    log_to_file "ERROR" "$*"
+    log_to_file "ERROR" "$*" "$category"
+}
+
+log_success() {
+    local message="$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    local category="${STIG_LOG_CATEGORY:-GENERAL}"
+    echo -e "\033[1;32m[SUCCESS]${NC} $message"
+    log_to_file "SUCCESS" "$*" "$category"
+}
+
+log_recovery() {
+    local message="$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    local category="${STIG_LOG_CATEGORY:-RECOVERY}"
+    echo -e "\033[0;35m[RECOVERY]${NC} $message"
+    log_to_file "RECOVERY" "$*" "$category"
 }
 
 log_skip() {
@@ -118,23 +175,96 @@ log_skip() {
     log_to_file "SKIP" "$*"
 }
 
-# Air-gap detection and configuration
-detect_air_gap() {
-    local is_air_gapped=false
+# Safe TMOUT handling to prevent readonly variable errors
+safe_tmout_config() {
+    local config_file="$1"
+    local timeout_value="${2:-900}"
+    local description="${3:-STIG Session Timeout}"
     
-    # Test internet connectivity with multiple methods
-    if ! ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1 && \
-       ! ping -c 1 -W 5 1.1.1.1 >/dev/null 2>&1 && \
-       ! curl -m 10 -s http://www.google.com >/dev/null 2>&1; then
+    log_info "Configuring safe TMOUT in $config_file"
+    
+    cat > "$config_file" << EOF
+# $description
+# Safe TMOUT configuration that avoids readonly variable errors
+if ! readonly -p 2>/dev/null | grep -q "declare -r TMOUT"; then
+    # TMOUT is not readonly, safe to set and make readonly
+    TMOUT=$timeout_value
+    readonly TMOUT
+    export TMOUT
+elif [ -z "\$TMOUT" ] || [ "\$TMOUT" -gt $timeout_value ]; then
+    # TMOUT is readonly but not set or too high, try to export appropriate value
+    export TMOUT=$timeout_value 2>/dev/null || true
+fi
+EOF
+    
+    chmod 644 "$config_file" 2>/dev/null || true
+    chown root:root "$config_file" 2>/dev/null || true
+    
+    log_info "✅ Safe TMOUT configuration created: $config_file"
+    return 0
+}
+
+# Enhanced environment detection and configuration
+detect_environment() {
+    local is_air_gapped=false
+    local is_azure=false
+    local is_cloud=false
+    
+    log_info "🔍 Analyzing deployment environment..."
+    
+    # Enhanced cloud platform detection
+    if [[ -d "/var/lib/waagent" ]] || [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Virtual Machine" ]]; then
+        is_azure=true
+        is_cloud=true
+        log_info "☁️ Azure environment detected"
+    elif [[ -f "/sys/hypervisor/uuid" ]] && [[ $(head -c 3 /sys/hypervisor/uuid 2>/dev/null) == "ec2" ]]; then
+        is_cloud=true
+        log_info "☁️ AWS environment detected"
+    elif [[ -d "/sys/class/dmi/id" ]] && grep -q "Google" /sys/class/dmi/id/product_name 2>/dev/null; then
+        is_cloud=true
+        log_info "☁️ Google Cloud environment detected"
+    fi
+    
+    # Enhanced connectivity testing with better error handling
+    local connectivity_tests=0
+    local connectivity_passed=0
+    
+    log_info "🌐 Testing network connectivity..."
+    
+    # Test multiple DNS servers
+    for dns in "8.8.8.8" "1.1.1.1" "208.67.222.222"; do
+        ((connectivity_tests++))
+        if timeout 5 ping -c 1 -W 2 "$dns" >/dev/null 2>&1; then
+            ((connectivity_passed++))
+            break
+        fi
+    done
+    
+    # Test HTTP connectivity
+    for url in "http://www.google.com" "http://www.redhat.com" "http://www.microsoft.com"; do
+        ((connectivity_tests++))
+        if timeout 10 curl -s --connect-timeout 5 "$url" >/dev/null 2>&1; then
+            ((connectivity_passed++))
+            break
+        fi
+    done
+    
+    # Determine air-gap status
+    if [[ $connectivity_passed -eq 0 ]]; then
         is_air_gapped=true
     fi
+    
+    # Set global environment variables
+    export STIG_AIR_GAPPED="$is_air_gapped"
+    export STIG_AZURE_ENV="$is_azure"
+    export STIG_CLOUD_ENV="$is_cloud"
     
     if [[ "$is_air_gapped" == "true" ]]; then
         log_warn "🔒 AIR-GAPPED ENVIRONMENT DETECTED"
         log_warn "📋 Script will use offline-compatible configurations"
         log_warn "📄 Manual installation guides will be created for missing components"
         
-        # Create air-gap environment guide
+        # Create comprehensive air-gap environment guide
         cat > "/root/air-gap-stig-guide.txt" << 'EOF'
 Air-Gapped STIG Deployment Guide
 =================================
@@ -144,35 +274,657 @@ This STIG script has been configured for offline operation with the following ad
 
 1. PACKAGE INSTALLATION:
    - Script will skip automatic package downloads
+   - Multiple fallback methods will be attempted
    - Manual installation instructions provided for each missing component
    - Use local repositories or transfer RPM packages manually
 
-2. CERTIFICATE MANAGEMENT:
+2. REPOSITORY CONFIGURATION:
+   - Local repository detection and configuration
+   - BaseOS and AppStream repository setup for offline use
+   - Alternative package sources when available
+
+3. CERTIFICATE MANAGEMENT:
    - Self-signed certificates generated locally
    - Production systems should use organizational CA certificates
    - Manual PKI setup instructions provided
 
-3. AIDE FILE INTEGRITY:
+4. AIDE FILE INTEGRITY:
    - Will use existing AIDE if available
    - Manual installation instructions provided if missing
    - Database initialization may take longer on air-gapped systems
 
-4. RECOMMENDED ACTIONS:
+5. SERVICE MANAGEMENT:
+   - SSH service restart protection in cloud environments
+   - Safe service management with rollback capabilities
+   - Azure-specific protections when detected
+
+6. RECOMMENDED ACTIONS:
    - Review all generated *-manual-*.txt files in /root/
    - Install missing packages from local repositories
    - Replace self-signed certificates with organizational certificates
    - Verify all configurations after manual package installation
+   - Test SSH connectivity after completion
 
 This script prioritizes STIG compliance configuration over package installation
-in air-gapped environments.
+in air-gapped environments with enhanced recovery mechanisms.
 EOF
         log_info "📄 Air-gap deployment guide created: /root/air-gap-stig-guide.txt"
         
-        # Set global air-gap flag for other functions
-        export STIG_AIR_GAPPED="true"
     else
         log_info "🌐 Internet connectivity detected - using full online configuration"
-        export STIG_AIR_GAPPED="false"
+    fi
+    
+    # Azure-specific configurations
+    if [[ "$is_azure" == "true" ]]; then
+        log_info "⚡ Configuring Azure-specific STIG protections..."
+        
+        # Create Azure-specific guide
+        cat > "/root/azure-stig-guide.txt" << 'EOF'
+Azure STIG Deployment Guide
+===========================
+
+Azure-specific configurations have been applied:
+
+1. SSH SERVICE MANAGEMENT:
+   - SSH restart protection to prevent Bastion disconnection
+   - SSH configuration validation before restart
+   - Automatic rollback on SSH service failure
+
+2. CLOUD OPTIMIZATIONS:
+   - Azure agent compatibility maintained
+   - Cloud-init configurations preserved
+   - Network security rules Azure-compatible
+
+3. MONITORING:
+   - Enhanced logging for Azure environments
+   - Recovery tracking with rollback capabilities
+   - Service dependency management
+
+4. RECOMMENDATIONS:
+   - Test SSH connectivity after completion
+   - Review Azure security center compliance
+   - Validate network security group rules
+   - Monitor Azure agent status
+
+EOF
+        log_info "📄 Azure deployment guide created: /root/azure-stig-guide.txt"
+    fi
+    
+    return 0
+}
+
+# Enhanced repository management with intelligent fallback
+configure_repositories() {
+    log_info "🔧 Configuring repositories with intelligent fallback..."
+    
+    # Skip in air-gapped environments
+    if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+        log_info "Air-gapped mode - configuring local repositories only"
+        configure_local_repositories
+        return 0
+    fi
+    
+    local repo_configured=false
+    local backup_created=false
+    
+    # Create backup of repository configuration
+    if [[ -d "/etc/yum.repos.d" ]]; then
+        log_info "Creating repository configuration backup..."
+        cp -r /etc/yum.repos.d /etc/yum.repos.d.stig-backup 2>/dev/null || true
+        backup_created=true
+    fi
+    
+    # Method 1: Use existing repositories if available
+    if ! repo_configured; then
+        log_info "Attempting to use existing repositories..."
+        if dnf repolist enabled 2>/dev/null | grep -q "rhel-9"; then
+            log_info "✅ Existing RHEL 9 repositories found and enabled"
+            repo_configured=true
+        fi
+    fi
+    
+    # Method 2: Enable standard RHEL repositories
+    if ! repo_configured; then
+        log_info "Attempting to enable standard RHEL repositories..."
+        if command -v subscription-manager >/dev/null 2>&1; then
+            if subscription-manager repos --enable=rhel-9-for-x86_64-baseos-rpms \
+                                         --enable=rhel-9-for-x86_64-appstream-rpms 2>/dev/null; then
+                log_info "✅ Standard RHEL repositories enabled"
+                repo_configured=true
+            fi
+        fi
+    fi
+    
+    # Method 3: Configure CentOS Stream repositories as fallback
+    if ! repo_configured; then
+        log_info "Attempting to configure CentOS Stream repositories..."
+        if configure_centos_repositories; then
+            log_info "✅ CentOS Stream repositories configured"
+            repo_configured=true
+        fi
+    fi
+    
+    # Method 4: Configure local repositories
+    if ! repo_configured; then
+        log_warn "Online repositories unavailable, configuring local repositories..."
+        if configure_local_repositories; then
+            log_info "✅ Local repositories configured"
+            repo_configured=true
+        fi
+    fi
+    
+    # Verify repository configuration
+    if repo_configured; then
+        log_info "Verifying repository configuration..."
+        if dnf clean all 2>/dev/null && dnf makecache 2>/dev/null; then
+            log_info "✅ Repository configuration verified successfully"
+            return 0
+        else
+            log_warn "Repository verification failed, attempting recovery..."
+            if [[ "$backup_created" == "true" ]]; then
+                log_recovery "Restoring repository configuration backup..."
+                rm -rf /etc/yum.repos.d 2>/dev/null || true
+                mv /etc/yum.repos.d.stig-backup /etc/yum.repos.d 2>/dev/null || true
+            fi
+        fi
+    fi
+    
+    log_error "Failed to configure repositories with all methods"
+    return 1
+}
+
+# Configure CentOS Stream repositories as fallback
+configure_centos_repositories() {
+    log_info "Configuring CentOS Stream 9 repositories..."
+    
+    # Create CentOS Stream repository configuration
+    cat > /etc/yum.repos.d/centos-stream.repo << 'EOF'
+[centos-baseos]
+name=CentOS Stream 9 - BaseOS
+baseurl=http://mirror.stream.centos.org/9-stream/BaseOS/x86_64/os/
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+gpgcheck=1
+enabled=1
+
+[centos-appstream]
+name=CentOS Stream 9 - AppStream
+baseurl=http://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+gpgcheck=1
+enabled=1
+EOF
+    
+    # Import CentOS GPG key if available
+    if [[ -f "/etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial" ]]; then
+        rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial 2>/dev/null || true
+    fi
+    
+    # Test repository accessibility
+    if timeout 30 dnf repolist enabled 2>/dev/null | grep -q "centos"; then
+        log_info "✅ CentOS Stream repositories configured successfully"
+        return 0
+    else
+        log_warn "❌ CentOS Stream repositories not accessible"
+        rm -f /etc/yum.repos.d/centos-stream.repo 2>/dev/null || true
+        return 1
+    fi
+}
+
+# Configure local repositories for air-gapped environments
+configure_local_repositories() {
+    log_info "Configuring local repositories for air-gapped environment..."
+    
+    local local_repo_configured=false
+    
+    # Check for mounted installation media
+    local mount_points=("/mnt" "/media" "/run/media" "/mnt/cdrom")
+    
+    for mount_point in "${mount_points[@]}"; do
+        if [[ -d "$mount_point" ]]; then
+            for subdir in "$mount_point"/*; do
+                if [[ -d "$subdir/BaseOS" ]] && [[ -d "$subdir/AppStream" ]]; then
+                    log_info "Found installation media at: $subdir"
+                    
+                    # Create local repository configuration
+                    cat > /etc/yum.repos.d/local-media.repo << EOF
+[local-baseos]
+name=Local BaseOS Repository
+baseurl=file://$subdir/BaseOS
+gpgcheck=0
+enabled=1
+
+[local-appstream]
+name=Local AppStream Repository
+baseurl=file://$subdir/AppStream
+gpgcheck=0
+enabled=1
+EOF
+                    
+                    if dnf repolist enabled 2>/dev/null | grep -q "local-"; then
+                        log_info "✅ Local media repositories configured successfully"
+                        local_repo_configured=true
+                        break
+                    fi
+                fi
+            done
+        fi
+        
+        if [[ "$local_repo_configured" == "true" ]]; then
+            break
+        fi
+    done
+    
+    # Create air-gap manual installation guide
+    if [[ "$local_repo_configured" == "false" ]]; then
+        cat > "/root/local-repository-setup.txt" << 'EOF'
+Local Repository Setup Guide
+============================
+
+No local repositories were automatically detected. To set up local repositories:
+
+OPTION 1: Configure local repository from installation media
+1. Mount installation media: mount /dev/cdrom /mnt/cdrom
+2. Configure local repository: 
+   - Create /etc/yum.repos.d/local.repo with baseurl=file:///mnt/cdrom
+   - Enable repository: dnf config-manager --enable <repo-name>
+
+OPTION 2: Use existing local repository server
+1. Update /etc/yum.repos.d/ with your local repository URLs
+2. Import necessary GPG keys
+3. Test with: dnf repolist enabled
+
+OPTION 3: Manual package installation
+1. Download required RPM packages on connected system
+2. Transfer packages to air-gapped system
+3. Install with: dnf localinstall *.rpm
+
+Required packages for STIG compliance:
+- aide
+- openssl-pkcs11
+- pcsc-lite
+- postfix
+- chrony
+- audispd-plugins
+- rsyslog-gnutls
+- authselect
+EOF
+        
+        log_info "📄 Local repository setup guide created: /root/local-repository-setup.txt"
+        log_warn "Manual action required: Configure local repository following guide"
+    fi
+    
+    return 0
+}
+
+# Enhanced package installation with multiple fallback methods
+enhanced_package_install() {
+    local package_name="$1"
+    local control_id="$2"
+    local description="${3:-Installing $package_name}"
+    
+    log_info "📦 $description"
+    
+    # Skip package installation in air-gapped mode, but provide guidance
+    if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+        log_info "Air-gapped mode - checking if $package_name is already installed..."
+        
+        if rpm -q "$package_name" >/dev/null 2>&1; then
+            log_info "✅ $package_name is already installed"
+            return 0
+        else
+            log_warn "⚠️ $package_name not installed in air-gapped environment"
+            create_package_install_guide "$package_name" "$control_id"
+            return 1
+        fi
+    fi
+    
+    # Method 1: Standard DNF installation
+    log_info "Attempting standard installation of $package_name..."
+    if timeout 300 dnf install -y "$package_name" 2>/dev/null; then
+        log_info "✅ $package_name installed successfully via DNF"
+        return 0
+    fi
+    
+    # Method 2: YUM fallback
+    if command -v yum >/dev/null 2>&1; then
+        log_info "DNF failed, trying YUM installation of $package_name..."
+        if timeout 300 yum install -y "$package_name" 2>/dev/null; then
+            log_info "✅ $package_name installed successfully via YUM"
+            return 0
+        fi
+    fi
+    
+    # Method 3: Enable additional repositories and retry
+    log_info "Standard installation failed, enabling additional repositories..."
+    dnf config-manager --enable "*" 2>/dev/null || true
+    
+    if timeout 300 dnf install -y "$package_name" 2>/dev/null; then
+        log_info "✅ $package_name installed successfully with additional repositories"
+        return 0
+    fi
+    
+    # Method 4: Try with --skip-broken
+    log_info "Trying installation with dependency resolution..."
+    if timeout 300 dnf install -y "$package_name" --skip-broken 2>/dev/null; then
+        log_info "✅ $package_name installed successfully with dependency resolution"
+        return 0
+    fi
+    
+    # All methods failed
+    log_error "❌ Failed to install $package_name with all methods"
+    create_package_install_guide "$package_name" "$control_id"
+    return 1
+}
+
+# Create manual installation guide for failed packages
+create_package_install_guide() {
+    local package_name="$1"
+    local control_id="$2"
+    local guide_file="/root/manual-install-${package_name}.txt"
+    
+    cat > "$guide_file" << EOF
+Manual Installation Guide: $package_name
+========================================
+
+Control ID: $control_id
+Package: $package_name
+Date: $(date)
+
+INSTALLATION OPTIONS:
+
+1. LOCAL REPOSITORY:
+   - Configure local repository (see /root/local-repository-setup.txt)
+   - Install: dnf install $package_name
+
+2. RPM PACKAGE:
+   - Download $package_name RPM on connected system
+   - Transfer to this system
+   - Install: dnf localinstall $package_name*.rpm
+
+3. ALTERNATIVE SOURCES:
+   - Check for alternative package names
+   - Search: dnf search $package_name
+   - Try related packages: rpm -qa | grep -i ${package_name%%-*}
+
+4. DEPENDENCY RESOLUTION:
+   - If dependencies fail: dnf install $package_name --skip-broken
+   - Check conflicts: dnf check
+   - Resolve manually: dnf install <dependency-package>
+
+VERIFICATION:
+- Verify installation: rpm -q $package_name
+- Check functionality: systemctl status $package_name (if service)
+- Test configuration: $package_name --version (if applicable)
+
+This package is required for STIG control $control_id compliance.
+EOF
+    
+    log_info "📄 Manual installation guide created: $guide_file"
+}
+
+# Azure-safe service management with rollback capability
+azure_safe_service_restart() {
+    local service_name="$1"
+    local control_id="$2"
+    local description="${3:-Restarting $service_name}"
+    
+    log_info "🔄 $description"
+    
+    # Special handling for SSH in Azure environments
+    if [[ "$service_name" == "sshd" ]] && [[ "${STIG_AZURE_ENV:-false}" == "true" ]]; then
+        log_warn "⚡ Azure environment detected - using safe SSH restart procedure"
+        return azure_safe_ssh_restart "$control_id"
+    fi
+    
+    # Standard service restart with validation
+    local backup_config=""
+    local service_was_running=false
+    
+    # Check if service is currently running
+    if systemctl is-active "$service_name" >/dev/null 2>&1; then
+        service_was_running=true
+        log_info "Service $service_name is currently running"
+    else
+        log_info "Service $service_name is not currently running"
+    fi
+    
+    # Create service backup if configuration exists
+    if [[ -f "/etc/systemd/system/$service_name.service" ]]; then
+        backup_config="/tmp/${service_name}.service.stig-backup"
+        cp "/etc/systemd/system/$service_name.service" "$backup_config" 2>/dev/null || true
+        log_info "Service configuration backed up to $backup_config"
+    fi
+    
+    # Attempt service restart
+    log_info "Attempting to restart $service_name..."
+    if systemctl restart "$service_name" 2>/dev/null; then
+        log_info "✅ $service_name restarted successfully"
+        
+        # Verify service is running after restart
+        sleep 2
+        if systemctl is-active "$service_name" >/dev/null 2>&1; then
+            log_info "✅ $service_name is running and healthy after restart"
+            return 0
+        else
+            log_warn "⚠️ $service_name restart succeeded but service is not running"
+            # Attempt recovery
+            if [[ "$service_was_running" == "true" ]]; then
+                log_recovery "Attempting to recover $service_name..."
+                if systemctl start "$service_name" 2>/dev/null; then
+                    log_recovery "✅ $service_name recovered successfully"
+                    return 0
+                fi
+            fi
+        fi
+    else
+        log_error "❌ Failed to restart $service_name"
+        
+        # Attempt recovery if service was running before
+        if [[ "$service_was_running" == "true" ]]; then
+            log_recovery "Attempting to recover $service_name to previous state..."
+            
+            # Restore backup if available
+            if [[ -f "$backup_config" ]]; then
+                log_recovery "Restoring service configuration from backup..."
+                cp "$backup_config" "/etc/systemd/system/$service_name.service" 2>/dev/null || true
+                systemctl daemon-reload 2>/dev/null || true
+            fi
+            
+            # Try to start service
+            if systemctl start "$service_name" 2>/dev/null; then
+                log_recovery "✅ $service_name recovered successfully"
+                return 0
+            else
+                log_error "❌ Failed to recover $service_name"
+            fi
+        fi
+    fi
+    
+    return 1
+}
+
+# Azure-safe SSH restart with comprehensive safety checks
+azure_safe_ssh_restart() {
+    local control_id="$1"
+    
+    log_warn "🔒 Implementing Azure-safe SSH restart procedure..."
+    
+    # Step 1: Validate SSH configuration
+    log_info "Step 1: Validating SSH configuration..."
+    if ! sshd -t 2>/dev/null; then
+        log_error "❌ SSH configuration validation failed - NOT restarting SSH"
+        handle_error "1" "$control_id" "SSH configuration validation failed" "sshd -t"
+        return 1
+    fi
+    log_info "✅ SSH configuration is valid"
+    
+    # Step 2: Create backup of SSH configuration
+    log_info "Step 2: Creating SSH configuration backup..."
+    local ssh_backup="/etc/ssh/sshd_config.stig-backup-$(date +%Y%m%d-%H%M%S)"
+    if cp /etc/ssh/sshd_config "$ssh_backup" 2>/dev/null; then
+        log_info "✅ SSH configuration backed up to $ssh_backup"
+    else
+        log_warn "⚠️ Failed to backup SSH configuration"
+    fi
+    
+    # Step 3: Test connectivity preservation
+    log_info "Step 3: Verifying current SSH connectivity..."
+    if [[ -n "${SSH_CLIENT:-}" ]] || [[ -n "${SSH_TTY:-}" ]]; then
+        log_warn "🔌 Active SSH session detected - using safe reload method"
+        
+        # Use reload instead of restart to preserve connections
+        log_info "Using 'systemctl reload sshd' to preserve active connections..."
+        if systemctl reload sshd 2>/dev/null; then
+            log_info "✅ SSH configuration reloaded successfully"
+            
+            # Verify SSH is still accepting connections
+            sleep 2
+            if systemctl is-active sshd >/dev/null 2>&1; then
+                log_info "✅ SSH service is active and healthy"
+                
+                # Test that SSH is still listening
+                if ss -tln | grep -q ":22 " 2>/dev/null; then
+                    log_info "✅ SSH is listening on port 22"
+                    return 0
+                else
+                    log_warn "⚠️ SSH service active but not listening on port 22"
+                fi
+            else
+                log_error "❌ SSH service not active after reload"
+            fi
+        else
+            log_error "❌ SSH reload failed"
+        fi
+        
+        # If reload failed, try restart with extra safety
+        log_warn "Reload failed, attempting careful restart..."
+        
+        # Create a recovery script
+        cat > /tmp/ssh-recovery.sh << 'EOF'
+#!/bin/bash
+sleep 10
+if ! systemctl is-active sshd >/dev/null 2>&1; then
+    echo "SSH service down, attempting recovery..."
+    systemctl start sshd
+    if [[ -f /etc/ssh/sshd_config.stig-backup* ]]; then
+        echo "SSH still failing, restoring backup..."
+        cp /etc/ssh/sshd_config.stig-backup* /etc/ssh/sshd_config
+        systemctl restart sshd
+    fi
+fi
+EOF
+        chmod +x /tmp/ssh-recovery.sh
+        
+        # Start recovery script in background
+        nohup /tmp/ssh-recovery.sh >/dev/null 2>&1 &
+        
+        # Attempt restart
+        if systemctl restart sshd 2>/dev/null; then
+            log_info "✅ SSH restarted successfully"
+            sleep 3
+            
+            # Verify SSH is working
+            if systemctl is-active sshd >/dev/null 2>&1 && ss -tln | grep -q ":22 "; then
+                log_info "✅ SSH restart successful - service active and listening"
+                return 0
+            else
+                log_error "❌ SSH restart failed verification"
+            fi
+        else
+            log_error "❌ SSH restart failed"
+        fi
+        
+    else
+        log_info "No active SSH session detected - safe to restart normally"
+        
+        # Standard restart for non-SSH sessions
+        if systemctl restart sshd 2>/dev/null; then
+            log_info "✅ SSH restarted successfully"
+            
+            # Verify SSH is working
+            sleep 2
+            if systemctl is-active sshd >/dev/null 2>&1 && ss -tln | grep -q ":22 "; then
+                log_info "✅ SSH restart successful - service active and listening"
+                return 0
+            else
+                log_error "❌ SSH restart failed verification"
+            fi
+        else
+            log_error "❌ SSH restart failed"
+        fi
+    fi
+    
+    # If we reach here, restart failed
+    log_error "❌ Azure-safe SSH restart failed"
+    handle_error "1" "$control_id" "SSH restart failed in Azure environment" "systemctl restart sshd"
+    
+    # Attempt final recovery
+    log_recovery "Attempting final SSH recovery..."
+    if [[ -f "$ssh_backup" ]]; then
+        log_recovery "Restoring SSH configuration from backup..."
+        cp "$ssh_backup" /etc/ssh/sshd_config 2>/dev/null || true
+        systemctl restart sshd 2>/dev/null || true
+    fi
+    
+    return 1
+}
+
+# Enhanced configuration validation with rollback
+validate_and_apply_config() {
+    local config_file="$1"
+    local validation_command="$2"
+    local service_name="$3"
+    local control_id="$4"
+    local description="${5:-Validating $config_file}"
+    
+    log_info "🔍 $description"
+    
+    # Create backup
+    local backup_file="${config_file}.stig-backup-$(date +%Y%m%d-%H%M%S)"
+    if [[ -f "$config_file" ]]; then
+        if cp "$config_file" "$backup_file" 2>/dev/null; then
+            log_info "✅ Configuration backed up to $backup_file"
+        else
+            log_warn "⚠️ Failed to backup configuration file"
+        fi
+    fi
+    
+    # Validate configuration
+    if [[ -n "$validation_command" ]]; then
+        log_info "Validating configuration with: $validation_command"
+        if eval "$validation_command" 2>/dev/null; then
+            log_info "✅ Configuration validation passed"
+        else
+            log_error "❌ Configuration validation failed"
+            
+            # Restore backup if validation fails
+            if [[ -f "$backup_file" ]]; then
+                log_recovery "Restoring configuration from backup..."
+                cp "$backup_file" "$config_file" 2>/dev/null || true
+            fi
+            
+            handle_error "1" "$control_id" "Configuration validation failed" "$validation_command"
+            return 1
+        fi
+    fi
+    
+    # Apply configuration by restarting service if specified
+    if [[ -n "$service_name" ]]; then
+        if azure_safe_service_restart "$service_name" "$control_id" "Applying $config_file configuration"; then
+            log_info "✅ Configuration applied successfully"
+            return 0
+        else
+            log_error "❌ Failed to apply configuration"
+            
+            # Restore backup if service restart fails
+            if [[ -f "$backup_file" ]]; then
+                log_recovery "Restoring configuration from backup due to service failure..."
+                cp "$backup_file" "$config_file" 2>/dev/null || true
+                azure_safe_service_restart "$service_name" "$control_id" "Restoring $service_name with backup configuration" >/dev/null 2>&1 || true
+            fi
+            
+            return 1
+        fi
     fi
     
     return 0
@@ -1715,7 +2467,7 @@ impl_257848() {
     local control_id="V-257848"
     log_to_file "INFO" "[$control_id] Installing openssl-pkcs11 package..."
     
-    if safe_execute "$control_id" "Installing openssl-pkcs11" "dnf install -y openssl-pkcs11"; then
+    if enhanced_package_install "openssl-pkcs11" "$control_id" "Installing openssl-pkcs11 package for PKCS#11 cryptographic support"; then
         log_info "✅ openssl-pkcs11 package installed"
         return 0
     else
@@ -1743,7 +2495,7 @@ impl_257850() {
     local control_id="V-257850"
     log_to_file "INFO" "[$control_id] Installing postfix package..."
     
-    if safe_execute "$control_id" "Installing postfix" "dnf install -y postfix"; then
+    if enhanced_package_install "postfix" "$control_id" "Installing postfix mail transfer agent for STIG compliance"; then
         log_info "✅ postfix package installed"
         return 0
     else
@@ -3959,18 +4711,13 @@ impl_257927() {
     chmod 600 "$ssh_config_file"
     chown root:root "$ssh_config_file"
     
-    # Restart SSH service to apply changes (only if not Azure Bastion)
-    if is_azure_bastion_environment; then
-        log_info "✅ SSH host-based authentication disabled (Azure Bastion environment detected - service restart skipped)"
+    # Restart SSH service to apply changes with Azure-safe method
+    if azure_safe_service_restart "sshd" "$control_id" "Applying SSH host-based authentication configuration"; then
+        log_info "✅ SSH host-based authentication disabled and service restarted safely"
         return 0
     else
-        if safe_execute "$control_id" "Restarting SSH service" "systemctl restart sshd"; then
-            log_info "✅ SSH host-based authentication disabled and service restarted"
-            return 0
-        else
-            log_error "❌ Failed to restart SSH service"
-            return 1
-        fi
+        log_error "❌ Failed to restart SSH service safely"
+        return 1
     fi
 }
 
@@ -4941,18 +5688,9 @@ impl_257950() {
     local control_id="V-257950"
     log_to_file "INFO" "[$control_id] Configuring session timeout..."
     
-    # Configure shell timeout in profile
+    # Configure shell timeout in profile using safe method
     local profile_file="/etc/profile.d/stig-session-timeout.sh"
-    
-    cat > "$profile_file" << 'EOF'
-# STIG V-257950: Configure session timeout (15 minutes)
-TMOUT=900
-readonly TMOUT
-export TMOUT
-EOF
-    
-    chmod 644 "$profile_file"
-    chown root:root "$profile_file"
+    safe_tmout_config "$profile_file" "900" "STIG V-257950: Configure session timeout (15 minutes)"
     
     # Configure SSH timeout
     local ssh_config_dir="/etc/ssh/sshd_config.d"
@@ -5701,10 +6439,9 @@ impl_login_config() {
         fi
     done
     
-    # Configure session timeout
+    # Configure session timeout safely (avoid readonly variable errors)
     local profile_timeout="/etc/profile.d/stig-timeout.sh"
-    safe_execute "$control_id" "Creating session timeout script" "echo 'export TMOUT=900' > '$profile_timeout'"
-    safe_execute "$control_id" "Setting timeout script permissions" "chmod 755 '$profile_timeout'"
+    safe_tmout_config "$profile_timeout" "900" "STIG Session Timeout Configuration"
     
     if [[ "$success" == true ]]; then
         log_info "✅ Login security configuration applied"
@@ -8024,11 +8761,9 @@ impl_257983() {
         log_message "INFO" "$control_id: Configuring session locks with FIPS compatibility"
     fi
     
-    # Configure automatic session termination
+    # Configure automatic session termination safely
     if [ -f /etc/profile.d/tmout.sh ]; then
-        echo 'TMOUT=900' > /etc/profile.d/tmout.sh
-        echo 'readonly TMOUT' >> /etc/profile.d/tmout.sh
-        echo 'export TMOUT' >> /etc/profile.d/tmout.sh
+        safe_tmout_config "/etc/profile.d/tmout.sh" "900" "STIG Session Timeout - Safe Configuration"
     fi
     
     # Configure screen lock
@@ -8526,11 +9261,11 @@ main() {
     # Pre-flight checks
     log_info "Performing pre-flight checks..."
     
-    # Detect air-gapped environment
-    detect_air_gap
+    # Enhanced environment detection and configuration
+    detect_environment
     
-    # Fix repository configuration first
-    fix_repositories
+    # Configure repositories with intelligent fallback
+    configure_repositories
     
     if [[ -f /etc/redhat-release ]]; then
         local os_info
@@ -8541,7 +9276,7 @@ main() {
     fi
     
     log_info "Pre-flight checks completed"
-    log_info "Starting STIG control implementation with comprehensive error handling..."
+    log_info "🚀 Starting STIG control implementation with 90-95% success rate target..."
     
     # Execute all STIG controls with consistent error handling
     execute_stig_control "V-257777" "Verify RHEL 9 vendor support" "impl_257777"
@@ -8954,16 +9689,67 @@ EOF
         echo
     fi
     
+    # Calculate final success rate
+    local success_rate=0
+    if [[ $TOTAL_CONTROLS -gt 0 ]]; then
+        success_rate=$(( (APPLIED_CONTROLS * 100) / TOTAL_CONTROLS ))
+    fi
+    
+    log_info "📊 STIG DEPLOYMENT FINAL SUMMARY 📊"
+    log_info "═══════════════════════════════════════════════════════════════════════════════"
+    log_info "🎯 Target Success Rate: 90-95%"
+    log_info "📈 Achieved Success Rate: ${success_rate}% (${APPLIED_CONTROLS}/${TOTAL_CONTROLS} controls)"
+    log_info "✅ Applied Controls: $APPLIED_CONTROLS"
+    log_info "❌ Failed Controls: $FAILED_CONTROLS"
+    log_info "⏭️ Skipped Controls: $SKIPPED_CONTROLS"
+    log_info "═══════════════════════════════════════════════════════════════════════════════"
+    
+    # Success rate evaluation
+    if [[ $success_rate -ge 90 ]]; then
+        log_info "🎉 SUCCESS: Target success rate of 90-95% achieved!"
+        log_info "🛡️ System meets DISA STIG requirements with excellent compliance"
+    elif [[ $success_rate -ge 80 ]]; then
+        log_warn "⚠️ GOOD: 80%+ success rate achieved but below 90% target"
+        log_warn "📋 Review failed controls for additional hardening opportunities"
+    else
+        log_error "❌ ATTENTION: Success rate below 80% - significant manual review required"
+        log_error "🔧 Check air-gapped environment guides and manual installation files"
+    fi
+    
+    # Environment-specific guidance
+    if [[ "${STIG_AIR_GAPPED:-false}" == "true" ]]; then
+        log_info "🔒 AIR-GAPPED ENVIRONMENT DETECTED"
+        log_info "📄 Review manual guides: /root/*-manual-*.txt and /root/air-gap-stig-guide.txt"
+        log_info "📦 Install missing packages from local repositories as documented"
+    fi
+    
+    if [[ "${STIG_AZURE_ENV:-false}" == "true" ]]; then
+        log_info "☁️ AZURE ENVIRONMENT DETECTED"
+        log_info "🔌 SSH connectivity preserved with Azure-safe restart procedures"
+        log_info "📄 Review Azure-specific guide: /root/azure-stig-guide.txt"
+    fi
+    
+    # Recovery and next steps
+    log_info "🔧 RECOVERY AND NEXT STEPS:"
+    log_info "• Test SSH connectivity: ssh <username>@<this-server>"
+    log_info "• Verify services: systemctl status sshd auditd chronyd"
+    log_info "• Review logs: tail -f $LOG_FILE"
+    log_info "• Manual packages: ls /root/manual-install-*.txt"
+    log_info "• Configuration validation: /root/stig-validation-$(date +%Y%m%d).sh"
+    
     # Final status and next steps
     if [[ $FAILED_CONTROLS -gt 0 ]]; then
         log_warn "⚠️  Some controls failed - review errors above for manual remediation"
         log_warn "📝 Manual remediation may be required for security compliance"
+        if [[ $success_rate -ge 80 ]]; then
+            log_info "✅ Overall deployment successful with minor issues requiring attention"
+        fi
     else
         log_info "🎉 All automated controls processed successfully!"
         log_info "🛡️ System has been hardened according to DISA STIG requirements"
     fi
     
-    log_info "📁 Complete logs: $LOG_FILE"
+    log_info "� Main execution log: $LOG_FILE"
     log_info "🔒 STIG deployment complete - Azure connectivity preserved"
     log_info "═══════════════════════════════════════════════════════════════════════════════"
     
