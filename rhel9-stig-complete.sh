@@ -486,9 +486,9 @@ detect_environment() {
         
         # === AZURE DETECTION ===
         if [[ -d "/var/lib/waagent" ]] || \
-           [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Virtual Machine" ]] || \
-           [[ -f "/sys/class/dmi/id/sys_vendor" && $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == "Microsoft Corporation" ]] || \
-           [[ -f "/sys/class/dmi/id/chassis_vendor" && $(cat /sys/class/dmi/id/chassis_vendor 2>/dev/null) == "Microsoft Corporation" ]] || \
+           [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Virtual Machine" ]] || \
+           [[ -f "/sys/class/dmi/id/sys_vendor" ]] && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == "Microsoft Corporation" ]] || \
+           [[ -f "/sys/class/dmi/id/chassis_vendor" ]] && [[ $(cat /sys/class/dmi/id/chassis_vendor 2>/dev/null) == "Microsoft Corporation" ]] || \
            timeout 3 curl -s -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" >/dev/null 2>&1; then
             is_azure=true
             is_cloud=true
@@ -496,9 +496,9 @@ detect_environment() {
             log_info "☁️ Azure environment detected"
         
         # === AWS DETECTION ===
-        elif [[ -f "/sys/hypervisor/uuid" && $(head -c 3 /sys/hypervisor/uuid 2>/dev/null) == "ec2" ]] || \
-             [[ -f "/sys/class/dmi/id/product_version" && $(cat /sys/class/dmi/id/product_version 2>/dev/null) =~ amazon|aws ]] || \
-             [[ -f "/sys/class/dmi/id/bios_vendor" && $(cat /sys/class/dmi/id/bios_vendor 2>/dev/null) == "Amazon EC2" ]] || \
+        elif [[ -f "/sys/hypervisor/uuid" ]] && [[ $(head -c 3 /sys/hypervisor/uuid 2>/dev/null) == "ec2" ]] || \
+             [[ -f "/sys/class/dmi/id/product_version" ]] && [[ $(cat /sys/class/dmi/id/product_version 2>/dev/null) =~ amazon|aws ]] || \
+             [[ -f "/sys/class/dmi/id/bios_vendor" ]] && [[ $(cat /sys/class/dmi/id/bios_vendor 2>/dev/null) == "Amazon EC2" ]] || \
              timeout 3 curl -s "http://169.254.169.254/latest/meta-data/" >/dev/null 2>&1; then
             is_aws=true
             is_cloud=true
@@ -506,10 +506,10 @@ detect_environment() {
             log_info "☁️ AWS environment detected"
         
         # === GOOGLE CLOUD DETECTION ===
-        elif [[ -d "/sys/class/dmi/id" && grep -qi "google\|gce" /sys/class/dmi/id/product_name 2>/dev/null ]] || \
-             [[ -f "/sys/class/dmi/id/bios_vendor" && $(cat /sys/class/dmi/id/bios_vendor 2>/dev/null) == "Google" ]] || \
-             [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Google" ]] || \
-             [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Google Compute Engine" ]] || \
+        elif [[ -d "/sys/class/dmi/id" ]] && grep -qi "google\|gce" /sys/class/dmi/id/product_name 2>/dev/null || \
+             [[ -f "/sys/class/dmi/id/bios_vendor" ]] && [[ $(cat /sys/class/dmi/id/bios_vendor 2>/dev/null) == "Google" ]] || \
+             [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Google" ]] || \
+             [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) == "Google Compute Engine" ]] || \
              timeout 3 curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/" >/dev/null 2>&1; then
             is_gcp=true
             is_cloud=true
@@ -517,10 +517,10 @@ detect_environment() {
             log_info "☁️ Google Cloud Platform environment detected"
         
         # === VMWARE DETECTION ===
-        elif [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ VMware|"VMware Virtual Platform" ]] || \
-             [[ -f "/sys/class/dmi/id/sys_vendor" && $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) =~ VMware ]] || \
-             [[ -f "/sys/class/dmi/id/board_vendor" && $(cat /sys/class/dmi/id/board_vendor 2>/dev/null) =~ VMware ]] || \
-             [[ -f "/sys/class/dmi/id/bios_vendor" && $(cat /sys/class/dmi/id/bios_vendor 2>/dev/null) =~ VMware ]] || \
+        elif [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ VMware|"VMware Virtual Platform" ]] || \
+             [[ -f "/sys/class/dmi/id/sys_vendor" ]] && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) =~ VMware ]] || \
+             [[ -f "/sys/class/dmi/id/board_vendor" ]] && [[ $(cat /sys/class/dmi/id/board_vendor 2>/dev/null) =~ VMware ]] || \
+             [[ -f "/sys/class/dmi/id/bios_vendor" ]] && [[ $(cat /sys/class/dmi/id/bios_vendor 2>/dev/null) =~ VMware ]] || \
              command -v vmware-toolbox-cmd >/dev/null 2>&1 || \
              [[ -d "/proc/vz" ]] || \
              lspci 2>/dev/null | grep -qi vmware; then
@@ -530,10 +530,10 @@ detect_environment() {
             log_info "🏢 VMware vSphere environment detected"
         
         # === OTHER VIRTUALIZATION DETECTION ===
-        elif [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ VirtualBox ]] || \
-             [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ "QEMU" ]] || \
-             [[ -f "/sys/class/dmi/id/product_name" && $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ "KVM" ]] || \
-             [[ -f "/proc/cpuinfo" && grep -q "hypervisor" /proc/cpuinfo ]] || \
+        elif [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ VirtualBox ]] || \
+             [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ "QEMU" ]] || \
+             [[ -f "/sys/class/dmi/id/product_name" ]] && [[ $(cat /sys/class/dmi/id/product_name 2>/dev/null) =~ "KVM" ]] || \
+             [[ -f "/proc/cpuinfo" ]] && grep -q "hypervisor" /proc/cpuinfo || \
              command -v systemd-detect-virt >/dev/null 2>&1 && [[ $(systemd-detect-virt 2>/dev/null) != "none" ]]; then
             is_onprem=true
             virtualization_platform=$(systemd-detect-virt 2>/dev/null || echo "generic-hypervisor")
