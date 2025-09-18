@@ -323,6 +323,8 @@ The script implements **ALL 223 STIG controls** (SV-257777 to SV-257999) with in
 - **V-257997**: Enhanced network security configurations
 - **V-257998**: Advanced audit and monitoring capabilities
 - **V-257999**: Final verification and system lockdown procedures
+- **File Permissions**: Critical system files including /etc/passwd (0644) and other security-sensitive files
+- **Verification Functions**: Post-deployment validation of all file permissions and security controls
 
 ### Control Status Categories
 
@@ -353,6 +355,21 @@ The script automatically handles FIPS-enabled systems:
 - Skips incompatible cryptographic controls
 - Maintains security posture with FIPS-approved methods
 - Provides FIPS-specific configuration guidance
+
+### Critical File Permissions
+
+The script enforces STIG-required file permissions for security-critical files:
+
+| File/Directory | Required Permission | STIG Control | Purpose |
+|----------------|-------------------|--------------|---------|
+| `/etc/passwd` | 0644 | Multiple | User account information protection |
+| `/etc/shadow` | 0000 | V-257825 | Password hash protection |
+| `/etc/group` | 0644 | V-257826 | Group information security |
+| `/etc/gshadow` | 0000 | V-257827 | Group password protection |
+| `/boot/grub2/` | 0700 | V-257787 | Boot loader configuration security |
+| `/var/log/audit/` | 0750 | V-257859 | Audit log protection |
+
+**Verification**: The script includes built-in verification functions that validate all file permissions post-deployment to ensure STIG compliance.
 
 ## 📋 Logging and Reports
 

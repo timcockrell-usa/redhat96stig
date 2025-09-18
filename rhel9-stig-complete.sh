@@ -10997,6 +10997,33 @@ verify_critical_stig_controls() {
         ((failed_verifications++))
     fi
     
+    # V-257883: Verify /etc/passwd file permissions (0644)
+    if [ -f "/etc/passwd" ]; then
+        local passwd_perms=$(stat -c "%a" /etc/passwd 2>/dev/null)
+        if [ "$passwd_perms" = "644" ]; then
+            verification_results+=("✅ V-257883: /etc/passwd permissions = 644")
+        else
+            verification_results+=("❌ V-257883: /etc/passwd permissions = $passwd_perms (expected: 644)")
+            ((failed_verifications++))
+        fi
+    else
+        verification_results+=("❌ V-257883: /etc/passwd file not found")
+        ((failed_verifications++))
+    fi
+    
+    # V-257884: Verify /etc/passwd- file permissions (0644) if it exists
+    if [ -f "/etc/passwd-" ]; then
+        local passwd_backup_perms=$(stat -c "%a" /etc/passwd- 2>/dev/null)
+        if [ "$passwd_backup_perms" = "644" ]; then
+            verification_results+=("✅ V-257884: /etc/passwd- permissions = 644")
+        else
+            verification_results+=("❌ V-257884: /etc/passwd- permissions = $passwd_backup_perms (expected: 644)")
+            ((failed_verifications++))
+        fi
+    else
+        verification_results+=("ℹ️  V-257884: /etc/passwd- backup file not found (acceptable)")
+    fi
+    
     # Check firewall status
     if systemctl is-active firewalld &>/dev/null || systemctl is-active iptables &>/dev/null; then
         verification_results+=("✅ Firewall service is active")
